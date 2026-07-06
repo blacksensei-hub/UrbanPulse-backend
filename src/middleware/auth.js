@@ -54,7 +54,12 @@ export function signRefresh(user) {
 
 export const COOKIE_OPTS = {
   httpOnly: true,
-  sameSite: 'lax',
+  // 'none' is required in production because the frontend and backend are deployed as
+  // separate sites (different subdomains under vercel.app, which is on the Public Suffix
+  // List) — SameSite=Lax cookies are never attached to cross-site fetch/XHR requests, only
+  // top-level navigations. Locally frontend/backend share an origin via the dev proxy, so
+  // 'lax' still works there and doesn't require HTTPS.
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   secure: process.env.NODE_ENV === 'production',
   path: '/',
 };
