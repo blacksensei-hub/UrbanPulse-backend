@@ -9,7 +9,7 @@ const PUBLIC_KEYS = new Set([
   'shipping_standard_ghs', 'shipping_express_ghs', 'free_shipping_threshold_ghs',
   'maintenance_mode', 'maintenance_message',
   'feature_referrals', 'feature_wishlist', 'feature_reviews',
-  'feature_preorders', 'feature_cod', 'feature_paystack',
+  'feature_preorders', 'feature_cod', 'feature_paystack', 'feature_loyalty',
 ]);
 
 router.get('/public', asyncHandler(async (_req, res) => {

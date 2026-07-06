@@ -1,9 +1,10 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
-import { query } from '../db/index.js';
+import { query, tx } from '../db/index.js';
 import { asyncHandler, badRequest, notFound } from '../utils/helpers.js';
 import { initializeTransaction, verifyTransaction } from '../utils/paystackHelper.js';
 import { getSettings } from '../utils/settingsCache.js';
+import { awardPointsForOrder } from '../utils/loyalty.js';
 
 const router = express.Router();
 
@@ -68,13 +69,18 @@ router.post(
 router.get('/verify/:reference', asyncHandler(async (req, res) => {
   const data = await verifyTransaction(req.params.reference);
   if (data?.status === 'success') {
-    await query(
-      `UPDATE orders
-         SET payment_status = 'paid', status = 'processing'
-       WHERE paystack_reference = $1
-         AND payment_status <> 'paid'`,
-      [req.params.reference]
-    );
+    await tx(async (c) => {
+      const { rows } = await c.query(
+        `UPDATE orders
+           SET payment_status = 'paid', status = 'processing'
+         WHERE paystack_reference = $1
+           AND payment_status <> 'paid'
+         RETURNING *`,
+        [req.params.reference]
+      );
+      const order = rows[0];
+      if (order) await awardPointsForOrder(c, order);
+    });
   }
   res.json({ status: data?.status, reference: data?.reference });
 }));

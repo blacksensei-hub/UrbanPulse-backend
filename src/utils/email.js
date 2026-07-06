@@ -73,6 +73,19 @@ export const emailTemplates = {
     html: `<p>Click to reset: <a href="${link}">${link}</a> — expires in 1 hour.</p>`,
     text: `Reset link: ${link}`,
   }),
+  accountDeleted: (name) => {
+    const first = name?.split(' ')[0] ?? 'there';
+    return {
+      subject: 'Your UrbanPulse account has been deleted',
+      html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;color:#111">
+               <p style="font-size:15px">Hi ${first},</p>
+               <p style="font-size:15px">This confirms your UrbanPulse account and personal profile data have been deleted, as you requested.</p>
+               <p style="font-size:14px">Order and return records are retained for accounting and legal purposes but are no longer linked to your personal profile.</p>
+               <p style="font-size:14px">If you did not request this, please contact support immediately.</p>
+             </div>`,
+      text: `Hi ${first},\n\nThis confirms your UrbanPulse account and personal profile data have been deleted, as you requested.\n\nOrder and return records are retained for accounting and legal purposes but are no longer linked to your personal profile.\n\nIf you did not request this, please contact support immediately.`,
+    };
+  },
   refunded: (o) => ({
     subject: `Refund processed for order ${o.order_number}`,
     html: `<p>Your refund for order <strong>${o.order_number}</strong> has been processed. GH₵ ${o.total} will be returned to your original payment method within 5–10 business days.</p>`,

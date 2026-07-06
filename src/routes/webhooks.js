@@ -1,10 +1,11 @@
 import express from 'express';
 import { verifyWebhookSignature } from '../utils/paystackHelper.js';
-import { query } from '../db/index.js';
+import { tx } from '../db/index.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendSMS, smsTemplates } from '../utils/sms.js';
 import { logger } from '../utils/logger.js';
 import { checkAndQualifyReferral } from '../utils/referral.js';
+import { awardPointsForOrder } from '../utils/loyalty.js';
 
 const router = express.Router();
 
@@ -34,24 +35,30 @@ router.post('/paystack', (req, res) => {
     try {
       if (event?.event === 'charge.success' && event?.data?.reference) {
         const reference = event.data.reference;
-        const { rows } = await query(
-          `UPDATE orders
-              SET payment_status = 'paid', status = 'processing'
-            WHERE paystack_reference = $1
-              AND payment_status <> 'paid'
-            RETURNING *`,
-          [reference]
-        );
-        const order = rows[0];
+        const order = await tx(async (c) => {
+          const { rows } = await c.query(
+            `UPDATE orders
+                SET payment_status = 'paid', status = 'processing'
+              WHERE paystack_reference = $1
+                AND payment_status <> 'paid'
+              RETURNING *`,
+            [reference]
+          );
+          const ord = rows[0];
+          if (ord) {
+            await c.query(
+              'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+              [ord.id, 'paid', 'Payment confirmed via Paystack']
+            );
+            await c.query(
+              'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+              [ord.id, 'processing', null]
+            );
+            await awardPointsForOrder(c, ord);
+          }
+          return ord;
+        });
         if (order) {
-          await query(
-            'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-            [order.id, 'paid', 'Payment confirmed via Paystack']
-          );
-          await query(
-            'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-            [order.id, 'processing', null]
-          );
           const email = order.email || order.shipping_address?.email;
           const phone = order.phone || order.shipping_address?.phone;
           if (email) {

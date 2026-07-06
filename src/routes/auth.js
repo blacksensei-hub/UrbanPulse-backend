@@ -5,10 +5,10 @@ import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
 import { generateSecret, verifySync, generateURI } from 'otplib';
 import QRCode from 'qrcode';
-import { query } from '../db/index.js';
+import { query, tx } from '../db/index.js';
 import { asyncHandler, badRequest, unauthorized, HttpError } from '../utils/helpers.js';
-import { signAccess, signRefresh, requireAuth, COOKIE_OPTS, viewAsMiddleware } from '../middleware/auth.js';
-import { authLimiter } from '../utils/rateLimiter.js';
+import { signAccess, signRefresh, requireAuth, COOKIE_OPTS, viewAsMiddleware, rejectViewAsWrites } from '../middleware/auth.js';
+import { authLimiter, dataExportLimiter } from '../utils/rateLimiter.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { generateReferralCode } from '../utils/referral.js';
 import { logAdminAction } from '../utils/adminLog.js';
@@ -143,6 +143,9 @@ function userPayload(u) {
     role: u.role,
     referral_code: u.referral_code,
     store_credit_ghs: u.store_credit_ghs,
+    loyalty_points: u.loyalty_points,
+    loyalty_tier: u.loyalty_tier,
+    loyalty_lifetime_points: u.loyalty_lifetime_points,
     totp_enabled: u.totp_enabled,
     avatar_url: u.avatar_url ?? null,
     email_verified: u.email_verified ?? false,
@@ -178,7 +181,7 @@ router.post(
     const { rows } = await query(
       `INSERT INTO users (email, password_hash, name, referral_code)
        VALUES ($1,$2,$3,$4)
-       RETURNING id, email, name, role, referral_code, store_credit_ghs, totp_enabled,
+       RETURNING id, email, name, role, referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, totp_enabled,
                  avatar_url, email_verified,
                  google_id IS NOT NULL AS has_google,
                  password_hash IS NOT NULL AS has_password`,
@@ -219,7 +222,7 @@ router.post(
     const { email, password } = req.body;
     const { rows } = await query(
       `SELECT id, email, name, role, password_hash, is_blocked,
-              referral_code, store_credit_ghs, totp_enabled,
+              referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, totp_enabled,
               avatar_url, email_verified,
               google_id IS NOT NULL AS has_google,
               password_hash IS NOT NULL AS has_password
@@ -272,7 +275,7 @@ router.post('/login/verify-totp', authLimiter, asyncHandler(async (req, res) => 
 
   const { rows: [user] } = await query(
     `SELECT id, email, name, role, totp_secret, totp_enabled, totp_recovery_codes,
-            referral_code, store_credit_ghs, avatar_url, email_verified,
+            referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, avatar_url, email_verified,
             google_id IS NOT NULL AS has_google,
             password_hash IS NOT NULL AS has_password
      FROM users WHERE id = $1`,
@@ -331,7 +334,7 @@ router.post('/google', authLimiter, asyncHandler(async (req, res) => {
   // a) Look up by google_id first (returning Google user)
   let { rows: [user] } = await query(
     `SELECT id, email, name, role, is_blocked, totp_enabled,
-            referral_code, store_credit_ghs, avatar_url, email_verified,
+            referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, avatar_url, email_verified,
             google_id IS NOT NULL AS has_google,
             password_hash IS NOT NULL AS has_password
      FROM users WHERE google_id = $1`,
@@ -342,7 +345,7 @@ router.post('/google', authLimiter, asyncHandler(async (req, res) => {
     // b) Look up by email
     const { rows: [byEmail] } = await query(
       `SELECT id, email, name, role, is_blocked, totp_enabled, google_id,
-              referral_code, store_credit_ghs, avatar_url, email_verified,
+              referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, avatar_url, email_verified,
               google_id IS NOT NULL AS has_google,
               password_hash IS NOT NULL AS has_password
        FROM users WHERE email = $1`,
@@ -367,7 +370,7 @@ router.post('/google', authLimiter, asyncHandler(async (req, res) => {
            SET google_id = $1, avatar_url = $2, email_verified = true
          WHERE id = $3
          RETURNING id, email, name, role, is_blocked, totp_enabled,
-                   referral_code, store_credit_ghs, avatar_url, email_verified,
+                   referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, avatar_url, email_verified,
                    google_id IS NOT NULL AS has_google,
                    password_hash IS NOT NULL AS has_password`,
         [googleSub, picture ?? byEmail.avatar_url, byEmail.id]
@@ -399,7 +402,7 @@ router.post('/google', authLimiter, asyncHandler(async (req, res) => {
            (email, name, password_hash, role, google_id, avatar_url, email_verified, referral_code)
          VALUES ($1, $2, NULL, 'customer', $3, $4, true, $5)
          RETURNING id, email, name, role, is_blocked, totp_enabled,
-                   referral_code, store_credit_ghs, avatar_url, email_verified,
+                   referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, avatar_url, email_verified,
                    google_id IS NOT NULL AS has_google,
                    password_hash IS NOT NULL AS has_password`,
         [email, displayName, googleSub, picture ?? null, referralCode]
@@ -538,7 +541,7 @@ router.post('/refresh', asyncHandler(async (req, res) => {
   // Rotate
   await query('DELETE FROM refresh_tokens WHERE id = $1', [stored.rows[0].id]);
   const { rows } = await query(
-    `SELECT id, email, name, role, referral_code, store_credit_ghs, totp_enabled,
+    `SELECT id, email, name, role, referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, totp_enabled,
             avatar_url, email_verified,
             google_id IS NOT NULL AS has_google,
             password_hash IS NOT NULL AS has_password
@@ -591,7 +594,7 @@ router.post('/logout', asyncHandler(async (req, res) => {
 router.get('/me', requireAuth, viewAsMiddleware, asyncHandler(async (req, res) => {
   const userId = req.viewAs?.user_id ?? req.user.id;
   const { rows: [user] } = await query(
-    `SELECT id, email, name, role, is_blocked, referral_code, store_credit_ghs,
+    `SELECT id, email, name, role, is_blocked, referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points,
             totp_enabled, avatar_url, email_verified,
             google_id IS NOT NULL AS has_google,
             password_hash IS NOT NULL AS has_password
@@ -612,7 +615,7 @@ router.put('/me', requireAuth, asyncHandler(async (req, res) => {
            phone = COALESCE($2, phone),
            updated_at = NOW()
      WHERE id = $3
-     RETURNING id, email, name, phone, role, referral_code, store_credit_ghs, totp_enabled,
+     RETURNING id, email, name, phone, role, referral_code, store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points, totp_enabled,
                avatar_url, email_verified,
                google_id IS NOT NULL AS has_google,
                password_hash IS NOT NULL AS has_password,
@@ -803,6 +806,255 @@ router.get('/login-history', requireAuth, asyncHandler(async (req, res) => {
     via_google: r.reason?.startsWith('google') ?? false,
     created_at: r.created_at,
   })));
+}));
+
+// ── GET /api/auth/me/data-export ──────────────────────────────────────────────
+// Ghana DPA "right to access" — a full, honest export of what UrbanPulse holds about the
+// user. Single Promise.all of queries (json_agg for line items, no N+1). No "addresses" key:
+// there is no address-book table — the only address history kept is the JSONB snapshot on
+// each order's shipping_address, already included under orders[].
+router.get('/me/data-export', requireAuth, dataExportLimiter, asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const ip = getIp(req);
+
+  const [
+    { rows: [user] },
+    { rows: orders },
+    { rows: returns },
+    { rows: wishlist },
+    { rows: reviews },
+    { rows: referralsGiven },
+    { rows: referralsReceived },
+    { rows: storeCreditLedger },
+    { rows: loyaltyLedger },
+    { rows: sessions },
+    { rows: loginHistory },
+  ] = await Promise.all([
+    query(
+      `SELECT id, email, name, phone, role, referral_code, store_credit_ghs, loyalty_points,
+              loyalty_tier, loyalty_lifetime_points, avatar_url, email_verified,
+              google_id IS NOT NULL AS has_google, password_hash IS NOT NULL AS has_password,
+              created_at, updated_at
+       FROM users WHERE id = $1`,
+      [userId]
+    ),
+    query(
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method,
+              o.subtotal, o.shipping_cost, o.tax, o.total, o.shipping_address, o.created_at,
+              COALESCE((SELECT json_agg(oi ORDER BY oi.id) FROM order_items oi WHERE oi.order_id = o.id), '[]') AS items
+       FROM orders o WHERE o.user_id = $1 ORDER BY o.created_at DESC`,
+      [userId]
+    ),
+    query(
+      `SELECT r.id, r.order_id, r.rma_number, r.status, r.resolution, r.customer_note, r.created_at,
+              COALESCE((SELECT json_agg(ri ORDER BY ri.id) FROM return_items ri WHERE ri.return_id = r.id), '[]') AS items
+       FROM returns r WHERE r.user_id = $1 ORDER BY r.created_at DESC`,
+      [userId]
+    ),
+    query(
+      `SELECT w.product_id, p.name AS product_name, p.slug, w.created_at AS added_at
+       FROM wishlists w JOIN products p ON p.id = w.product_id
+       WHERE w.user_id = $1 ORDER BY w.created_at DESC`,
+      [userId]
+    ),
+    query(
+      `SELECT r.id, r.product_id, p.name AS product_name, r.rating, r.comment,
+              r.verified_purchase, r.image_url, r.created_at
+       FROM reviews r JOIN products p ON p.id = r.product_id
+       WHERE r.user_id = $1 ORDER BY r.created_at DESC`,
+      [userId]
+    ),
+    query(
+      `SELECT id, referred_email, status, referrer_reward_ghs, created_at, qualified_at, rewarded_at
+       FROM referrals WHERE referrer_user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    ),
+    query(
+      `SELECT id, status, referred_reward_ghs, created_at, qualified_at, rewarded_at
+       FROM referrals WHERE referred_user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    ),
+    query(`SELECT amount_ghs, reason, related_id, created_at FROM store_credit_ledger WHERE user_id = $1 ORDER BY created_at DESC`, [userId]),
+    query(`SELECT delta, reason, related_id, expires_at, note, created_at FROM loyalty_ledger WHERE user_id = $1 ORDER BY created_at DESC`, [userId]),
+    query(`SELECT id, user_agent, ip_address, last_seen_at, created_at, revoked_at FROM user_sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 500`, [userId]),
+    query(`SELECT id, ip_address, user_agent, success, reason, created_at FROM login_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 500`, [userId]),
+  ]);
+
+  if (!user) throw unauthorized();
+
+  const payload = {
+    generated_at: new Date().toISOString(),
+    profile: user, // no password_hash/totp_secret/totp_recovery_codes/raw google_id — never selected above
+    orders,
+    returns,
+    wishlist,
+    reviews,
+    referrals: { code: user.referral_code, given: referralsGiven, received: referralsReceived },
+    store_credit_ledger: storeCreditLedger,
+    loyalty_ledger: loyaltyLedger,
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      device: parseUserAgent(s.user_agent),
+      ip_address: anonymizeIp(s.ip_address),
+      last_seen_at: s.last_seen_at,
+      created_at: s.created_at,
+      revoked_at: s.revoked_at,
+    })),
+    login_history: loginHistory.map((e) => ({
+      id: e.id,
+      device: parseUserAgent(e.user_agent),
+      ip_address: anonymizeIp(e.ip_address),
+      success: e.success,
+      reason: e.reason,
+      created_at: e.created_at,
+    })),
+  };
+
+  await logAdminAction(userId, 'user.data_export', {}, ip);
+
+  const date = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Disposition', `attachment; filename="urbanpulse-data-${userId}-${date}.json"`);
+  res.json(payload);
+}));
+
+// ── POST /api/auth/me/delete-account ──────────────────────────────────────────
+// Ghana DPA "right to erasure" — anonymizes the users row rather than deleting it (orders are
+// accounting records with NO ACTION/legally-required retention, so the referenced row must
+// keep existing). None of the dependent tables' FK actions fire here since we UPDATE, not
+// DELETE, the users row — every cleanup below is an explicit statement for that reason.
+router.post('/me/delete-account', requireAuth, ...rejectViewAsWrites, asyncHandler(async (req, res) => {
+  const { password } = req.body ?? {};
+  const ip = getIp(req);
+
+  if (req.user.role === 'admin') {
+    throw badRequest('Admin accounts cannot self-delete. Ask another admin to do this for you.');
+  }
+
+  const { rows: [u] } = await query('SELECT name, email, password_hash FROM users WHERE id = $1', [req.user.id]);
+  if (!u) throw unauthorized();
+
+  if (!u.password_hash) {
+    return res.status(400).json({
+      message: 'Set a password first (Account → Security) so you can confirm account deletion.',
+      requires_password_setup: true,
+    });
+  }
+
+  if (!password || !(await bcrypt.compare(password, u.password_hash))) {
+    throw unauthorized('Incorrect password');
+  }
+
+  const originalEmail = u.email; // captured before anonymization, for the confirmation email below
+
+  await tx(async (c) => {
+    await c.query('DELETE FROM customer_notes WHERE customer_id = $1', [req.user.id]);
+    await c.query('DELETE FROM customer_flags WHERE customer_id = $1', [req.user.id]);
+    await c.query('DELETE FROM wishlists WHERE user_id = $1', [req.user.id]);
+    await c.query('DELETE FROM cart_items WHERE cart_id IN (SELECT id FROM carts WHERE user_id = $1)', [req.user.id]);
+    await c.query('DELETE FROM carts WHERE user_id = $1', [req.user.id]);
+    await c.query('DELETE FROM user_sessions WHERE user_id = $1', [req.user.id]);
+    await c.query('DELETE FROM refresh_tokens WHERE user_id = $1', [req.user.id]); // also invalidates any pending 'reset:'-prefixed token
+    await c.query('DELETE FROM login_events WHERE user_id = $1', [req.user.id]);
+    await c.query('UPDATE referrals SET referred_email = NULL WHERE referred_user_id = $1', [req.user.id]);
+
+    // Anonymize the identity LAST — no UPDATE to `reviews` needed; the displayed review
+    // author comes from `JOIN users u ON u.id = r.user_id` at read time (products.js),
+    // so this propagates "Deleted User" to every review for free.
+    await c.query(
+      `UPDATE users SET
+         name = 'Deleted User',
+         email = $2,
+         phone = NULL,
+         password_hash = NULL,
+         totp_secret = NULL,
+         totp_enabled = false,
+         totp_recovery_codes = NULL,
+         google_id = NULL,
+         avatar_url = NULL,
+         email_verified = false,
+         is_blocked = true,
+         updated_at = NOW()
+       WHERE id = $1`,
+      [req.user.id, `deleted-user-${req.user.id}@deleted.urbanpulse.local`]
+    );
+  });
+
+  await logAdminAction(req.user.id, 'user.account_deleted', {}, ip);
+  sendEmail({ to: originalEmail, ...emailTemplates.accountDeleted(u.name) }).catch(() => {});
+
+  res.clearCookie('accessToken', COOKIE_OPTS).clearCookie('refreshToken', COOKIE_OPTS).json({ ok: true, message: 'Account deleted.' });
+}));
+
+// ── GET /api/auth/me/privacy-events ───────────────────────────────────────────
+// Reuses admin_logs with admin_id = the customer's own id — already the precedent for
+// self-service (non-admin-initiated) actions, e.g. user.google_linked is logged this way
+// when a customer links their own Google account. No new table.
+const PRIVACY_EVENT_ACTIONS = [
+  'user.data_export',
+  'user.account_deleted',
+  'user.consent_updated',
+  'user.marketing_unsubscribed',
+  'user.google_linked',
+  'user.google_unlinked',
+  'user.password_set',
+  'user.password_set_via_reset',
+];
+
+router.get('/me/privacy-events', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    `SELECT action, details, created_at
+     FROM admin_logs
+     WHERE admin_id = $1 AND action = ANY($2::text[]) AND created_at > NOW() - INTERVAL '90 days'
+     ORDER BY created_at DESC LIMIT 50`,
+    [req.user.id, PRIVACY_EVENT_ACTIONS]
+  );
+  res.json(rows);
+}));
+
+// ── POST /api/auth/me/consent-updated ─────────────────────────────────────────
+// Audit-trail only — NOT the enforcement mechanism. Cookie/marketing preference enforcement
+// is entirely client-side (localStorage); this just records that a change happened, for the
+// user's own "Recent privacy events" list.
+router.post('/me/consent-updated', requireAuth, ...rejectViewAsWrites, asyncHandler(async (req, res) => {
+  const { functional, analytics, marketing } = req.body ?? {};
+  await logAdminAction(
+    req.user.id, 'user.consent_updated',
+    { functional: !!functional, analytics: !!analytics, marketing: !!marketing },
+    getIp(req)
+  );
+  res.json({ ok: true });
+}));
+
+// ── Marketing unsubscribe ──────────────────────────────────────────────────────
+// NOTE: this does NOT suppress backend/src/jobs/abandonedCart.js — that cron has no per-user
+// consent check today, and none is added here (would need a schema change, out of scope this
+// sprint). This endpoint records the unsubscribe request and shows a real confirmation page,
+// rather than pretending the cron is gated by it.
+function signUnsubscribeToken(userId) {
+  return jwt.sign({ sub: userId, type: 'marketing_unsubscribe' }, process.env.JWT_SECRET, { expiresIn: '180d' });
+}
+
+router.get('/me/unsubscribe-link', requireAuth, asyncHandler(async (req, res) => {
+  const token = signUnsubscribeToken(req.user.id);
+  res.json({ url: `${process.env.BACKEND_URL || ''}/api/auth/unsubscribe/${token}` });
+}));
+
+router.get('/unsubscribe/:token', asyncHandler(async (req, res) => {
+  const page = (body) =>
+    `<!doctype html><html><body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center;color:#111">${body}</body></html>`;
+
+  let payload;
+  try {
+    payload = jwt.verify(req.params.token, process.env.JWT_SECRET);
+  } catch {
+    return res.status(400).send(page('<p>This unsubscribe link is invalid or has expired.</p>'));
+  }
+  if (payload.type !== 'marketing_unsubscribe') {
+    return res.status(400).send(page('<p>Invalid link.</p>'));
+  }
+
+  await logAdminAction(payload.sub, 'user.marketing_unsubscribed', { via: 'email_link' }, getIp(req));
+  res.send(page('<h2>You&rsquo;re unsubscribed</h2><p>You will no longer receive marketing emails from UrbanPulse.</p>'));
 }));
 
 export default router;

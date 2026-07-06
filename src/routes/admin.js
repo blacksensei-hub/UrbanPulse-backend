@@ -19,6 +19,8 @@ import { renderTemplate } from '../utils/templateRenderer.js';
 import crypto from 'crypto';
 import { getSettings, invalidateSettings } from '../utils/settingsCache.js';
 import { runAbandonedCartJob } from '../jobs/abandonedCart.js';
+import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
+import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -665,6 +667,9 @@ router.post(
         'INSERT INTO order_edits (order_id, field_name, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
         [orderId, 'status', order.status, status, reason, req.user.id]
       );
+      if (['cancelled', 'refunded'].includes(status) && order.payment_status === 'paid') {
+        await clawbackPointsForOrder(client, orderId);
+      }
     });
 
     const email = order.email || order.shipping_address?.email;
@@ -723,6 +728,7 @@ router.post(
         'INSERT INTO order_edits (order_id, field_name, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
         [orderId, 'manual_refund', { amount: 0 }, { amount: Number(amount_ghs), method }, reason, req.user.id]
       );
+      await clawbackPointsForOrder(client, orderId);
     });
 
     await logAdminAction(req.user.id, 'order.manual_refund',
@@ -737,17 +743,25 @@ router.put(
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) throw badRequest('Validation', errors.array());
-    const { rows } = await query(
-      'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
-      [req.body.status, req.params.id]
-    );
-    if (!rows[0]) throw notFound();
-    const updatedOrder = rows[0];
+    const updatedOrder = await tx(async (c) => {
+      const { rows } = await c.query(
+        'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+        [req.body.status, req.params.id]
+      );
+      if (!rows[0]) throw notFound();
+      const ord = rows[0];
+      await c.query(
+        'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+        [ord.id, ord.status, req.body.note ?? null]
+      );
+      // `payment_status` isn't touched by this UPDATE, so `ord.payment_status` here is still
+      // the pre-update value — safe to use directly as the "was this a paid order" check.
+      if (['cancelled', 'refunded'].includes(ord.status) && ord.payment_status === 'paid') {
+        await clawbackPointsForOrder(c, ord.id);
+      }
+      return ord;
+    });
     await logAdminAction(req.user.id, 'order.status', { id: updatedOrder.id, status: updatedOrder.status }, req.ip);
-    await query(
-      'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-      [updatedOrder.id, updatedOrder.status, req.body.note ?? null]
-    );
     const NOTIFY_ON = new Set(['paid', 'processing', 'shipped', 'delivered']);
     if (NOTIFY_ON.has(updatedOrder.status)) {
       const email = updatedOrder.email || updatedOrder.shipping_address?.email;
@@ -802,6 +816,7 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
     }
     // Roll back preorder_count for any preorder items in this order
     await rollbackPreorderCount(c, order.id);
+    await clawbackPointsForOrder(c, order.id);
   });
 
   await logAdminAction(req.user.id, 'order.refund',
@@ -852,25 +867,33 @@ router.post('/orders/:id/mark-paid', asyncHandler(async (req, res) => {
   if (order.payment_method !== 'cod') throw badRequest('Not a COD order');
   if (order.payment_status === 'paid') throw badRequest('Already marked as paid');
 
-  const { rows: updated } = await query(
-    `UPDATE orders SET payment_status = 'paid', status = 'delivered' WHERE id = $1 RETURNING *`,
-    [req.params.id]
-  );
-  await query(
-    'INSERT INTO order_status_history (order_id, status, note) VALUES ($1,$2,$3)',
-    [order.id, 'delivered', 'Cash collected on delivery']
-  );
-  await logAdminAction(req.user.id, 'order.cod.paid', { id: order.id }, req.ip);
+  const updatedOrder = await tx(async (c) => {
+    const { rows: updated } = await c.query(
+      `UPDATE orders SET payment_status = 'paid', status = 'delivered'
+       WHERE id = $1 AND payment_status <> 'paid' RETURNING *`,
+      [req.params.id]
+    );
+    const ord = updated[0];
+    if (!ord) throw badRequest('Already marked as paid');
+    await c.query(
+      'INSERT INTO order_status_history (order_id, status, note) VALUES ($1,$2,$3)',
+      [ord.id, 'delivered', 'Cash collected on delivery']
+    );
+    await awardPointsForOrder(c, ord);
+    return ord;
+  });
 
-  const email = order.email || order.shipping_address?.email;
-  const phone = order.phone || order.shipping_address?.phone;
-  const tpl = emailTemplates.delivered?.(updated[0]);
+  await logAdminAction(req.user.id, 'order.cod.paid', { id: updatedOrder.id }, req.ip);
+
+  const email = updatedOrder.email || updatedOrder.shipping_address?.email;
+  const phone = updatedOrder.phone || updatedOrder.shipping_address?.phone;
+  const tpl = emailTemplates.delivered?.(updatedOrder);
   if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
   if (phone && smsTemplates.delivered) {
-    sendSMS({ to: phone, message: smsTemplates.delivered(updated[0]) }).catch(() => {});
+    sendSMS({ to: phone, message: smsTemplates.delivered(updatedOrder) }).catch(() => {});
   }
-  checkAndQualifyReferral(updated[0].id, updated[0].user_id).catch(() => {});
-  res.json(updated[0]);
+  checkAndQualifyReferral(updatedOrder.id, updatedOrder.user_id).catch(() => {});
+  res.json(updatedOrder);
 }));
 
 // ── COD: cancel + restore stock ──
@@ -1069,6 +1092,38 @@ router.get('/analytics/customer-ltv', asyncHandler(async (_req, res) => {
   res.json(rows);
 }));
 
+// ───────── Loyalty overview ─────────
+router.get('/loyalty/overview', asyncHandler(async (_req, res) => {
+  const cfg = await getSettings();
+  const redeemRate = Number(cfg.loyalty_redeem_rate_ghs ?? 0.1);
+
+  const { rows: [totals] } = await query(
+    `SELECT
+       COALESCE(SUM(delta) FILTER (WHERE delta > 0), 0)::int AS total_issued,
+       COALESCE(SUM(-delta) FILTER (WHERE reason = 'redeemed_credit'), 0)::int AS total_redeemed
+     FROM loyalty_ledger`
+  );
+  const { rows: [{ outstanding }] } = await query(
+    `SELECT COALESCE(SUM(loyalty_points), 0)::int AS outstanding FROM users`
+  );
+  const { rows: tierDistribution } = await query(
+    `SELECT loyalty_tier AS tier, COUNT(*)::int AS count FROM users GROUP BY loyalty_tier`
+  );
+  const { rows: topMembers } = await query(
+    `SELECT id, name, email, loyalty_points, loyalty_tier
+     FROM users ORDER BY loyalty_points DESC LIMIT 10`
+  );
+
+  res.json({
+    total_issued: totals.total_issued,
+    total_redeemed: totals.total_redeemed,
+    outstanding_points: outstanding,
+    outstanding_liability_ghs: +(outstanding * redeemRate).toFixed(2),
+    tier_distribution: tierDistribution,
+    top_members: topMembers,
+  });
+}));
+
 // ───────── Activity logs ─────────
 router.get('/logs', asyncHandler(async (req, res) => {
   const { admin_id, action, from, to, q } = req.query;
@@ -1262,6 +1317,8 @@ router.post('/returns/:id/refund', asyncHandler(async (req, res) => {
       }
     }
 
+    await clawbackPointsForOrder(c, ret.order_id);
+
     const { rows: [r] } = await c.query(
       `UPDATE returns SET status = 'refunded', refunded_at = NOW(), refund_amount_ghs = $1
        WHERE id = $2 RETURNING *`,
@@ -1368,7 +1425,8 @@ router.get('/customers/:id', asyncHandler(async (req, res) => {
 
   const { rows: [user] } = await query(
     `SELECT id, name, email, phone, role, is_blocked, totp_enabled,
-            store_credit_ghs, created_at, last_login
+            store_credit_ghs, loyalty_points, loyalty_tier, loyalty_lifetime_points,
+            created_at, last_login
      FROM users WHERE id = $1`,
     [cid]
   );
@@ -1473,6 +1531,18 @@ router.get('/customers/:id/credit-ledger', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+// Not feature-gated — admins can see/manage loyalty data even while feature_loyalty is off.
+router.get('/customers/:id/loyalty-ledger', asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, delta, reason, related_id, note, expires_at, created_at
+     FROM loyalty_ledger
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+    [req.params.id]
+  );
+  res.json(rows);
+}));
+
 router.get('/customers/:id/notes', asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT cn.id, cn.note, cn.pinned, cn.created_at, cn.updated_at,
@@ -1567,6 +1637,54 @@ router.post('/customers/:id/adjust-credit',
     await logAdminAction(
       req.user.id,
       'credit.adjust',
+      { customer_id: customerId, delta: result.delta, reason, note: note || null },
+      req.ip
+    );
+
+    res.json(result);
+  })
+);
+
+// Manual loyalty-points adjustment — never touches lifetime_points/loyalty_tier (symmetric
+// with clawback: goodwill adjustments and refunds can grant/revoke spendable balance without
+// inflating or demoting tier).
+router.post('/customers/:id/loyalty/adjust',
+  body('delta').isInt(),
+  body('reason').isString().notEmpty(),
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) throw badRequest('Validation', errors.array());
+    const { delta, reason, note } = req.body;
+    const customerId = req.params.id;
+
+    const result = await tx(async (client) => {
+      const { rows: [user] } = await client.query(
+        'SELECT loyalty_points FROM users WHERE id = $1 FOR UPDATE',
+        [customerId]
+      );
+      if (!user) throw notFound('Customer');
+
+      const current = user.loyalty_points;
+      const newBalance = Math.max(0, current + Number(delta));
+      const actualDelta = newBalance - current;
+
+      await client.query(
+        'UPDATE users SET loyalty_points = $1 WHERE id = $2',
+        [newBalance, customerId]
+      );
+
+      await client.query(
+        `INSERT INTO loyalty_ledger (user_id, delta, reason, note)
+         VALUES ($1, $2, 'manual_adjustment', $3)`,
+        [customerId, actualDelta, note || null]
+      );
+
+      return { balance: newBalance, delta: actualDelta };
+    });
+
+    await logAdminAction(
+      req.user.id,
+      'loyalty.adjust',
       { customer_id: customerId, delta: result.delta, reason, note: note || null },
       req.ip
     );
@@ -1918,16 +2036,21 @@ router.post(
     const succeeded = [], failed = [];
     for (const id of ids) {
       try {
-        const { rows: [order] } = await query('SELECT id, status, email, phone, shipping_address FROM orders WHERE id = $1', [id]);
+        const { rows: [order] } = await query('SELECT id, status, payment_status, email, phone, shipping_address FROM orders WHERE id = $1', [id]);
         if (!order) { failed.push({ id, reason: 'Order not found' }); continue; }
         if (action === 'cancel' && ['cancelled', 'delivered', 'refunded'].includes(order.status)) {
           failed.push({ id, reason: `Cannot cancel order with status '${order.status}'` }); continue;
         }
-        await query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [newStatus, id]);
-        await query(
-          'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-          [id, newStatus, tracking_number ?? null]
-        );
+        await tx(async (c) => {
+          await c.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [newStatus, id]);
+          await c.query(
+            'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+            [id, newStatus, tracking_number ?? null]
+          );
+          if (action === 'cancel' && order.payment_status === 'paid') {
+            await clawbackPointsForOrder(c, id);
+          }
+        });
         const NOTIFY_ON = new Set(['shipped', 'delivered']);
         if (NOTIFY_ON.has(newStatus)) {
           const email = order.email || order.shipping_address?.email;
@@ -2433,6 +2556,13 @@ router.put('/settings', asyncHandler(async (req, res) => {
 }));
 
 // ───────── Job Triggers ─────────
+router.post('/jobs/loyalty-expiry/run', asyncHandler(async (req, res) => {
+  checkJobCooldown('loyalty-expiry');
+  const result = await runLoyaltyExpireJob();
+  await logAdminAction(req.user.id, 'job.run', { job: 'loyalty-expiry', result }, req.ip);
+  res.json({ ok: true, ...result });
+}));
+
 router.post('/jobs/abandoned-cart/run', asyncHandler(async (req, res) => {
   checkJobCooldown('abandoned-cart');
   const result = await runAbandonedCartJob();

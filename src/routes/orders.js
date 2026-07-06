@@ -5,6 +5,7 @@ import { asyncHandler, badRequest, forbidden, notFound, generateOrderNumber } fr
 import { optionalAuth, requireAuth, viewAsMiddleware, rejectViewAsWrites } from '../middleware/auth.js';
 import { generateReceiptPDF } from '../utils/receipt.js';
 import { getSettings } from '../utils/settingsCache.js';
+import { redeemPoints } from '../utils/loyalty.js';
 
 async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId }) {
   const cp = await queryFn.query(
@@ -84,7 +85,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) throw badRequest('Validation', errors.array());
-    const { shipping_address, coupon_code, email, shipping_method, payment_method: rawPM, apply_store_credit_ghs } = req.body;
+    const { shipping_address, coupon_code, email, shipping_method, payment_method: rawPM, apply_store_credit_ghs, apply_loyalty_points } = req.body;
     const payment_method = rawPM ?? 'paystack';
     if (!['paystack', 'cod'].includes(payment_method)) throw badRequest('Invalid payment_method');
     if (payment_method === 'cod') {
@@ -159,7 +160,29 @@ router.post(
         creditApplied = Math.max(0, creditApplied);
       }
 
-      const total = +(subtotal + shipping + tax - discount - creditApplied).toFixed(2);
+      // Apply loyalty points (server-side authoritative, applied after coupon + credit —
+      // stacking precedence: coupon → store credit → points). This block is calculation-only;
+      // the actual balance mutation happens via redeemPoints() after the order row exists.
+      let pointsRedeemed = 0;
+      let pointsCediValue = 0;
+      if (req.user && Number(apply_loyalty_points) > 0 && cfg.feature_loyalty !== 'false' && cfg.feature_loyalty !== false) {
+        const { rows: [loyaltyRow] } = await c.query(
+          'SELECT loyalty_points AS bal FROM users WHERE id = $1',
+          [req.user.id]
+        );
+        const pointsBalance = Number(loyaltyRow?.bal ?? 0);
+        const minRedeemPoints = Number(cfg.loyalty_min_redeem_points ?? 100);
+        const redeemRateGhs = Number(cfg.loyalty_redeem_rate_ghs ?? 0.1);
+        const preLoyaltyTotal = +(subtotal + shipping + tax - discount - creditApplied).toFixed(2);
+        const maxByTotal = Math.floor(preLoyaltyTotal / redeemRateGhs);
+
+        pointsRedeemed = Math.min(Math.floor(Number(apply_loyalty_points)), pointsBalance, maxByTotal);
+        pointsRedeemed = Math.max(0, pointsRedeemed);
+        if (pointsRedeemed > 0 && pointsRedeemed < minRedeemPoints) pointsRedeemed = 0; // below minimum → redeem nothing, no error
+        pointsCediValue = +(pointsRedeemed * redeemRateGhs).toFixed(2);
+      }
+
+      const total = +(subtotal + shipping + tax - discount - creditApplied - pointsCediValue).toFixed(2);
       const orderNumber = generateOrderNumber();
 
       const orderStatus = payment_method === 'cod' ? 'awaiting_confirmation' : 'pending';
@@ -241,6 +264,13 @@ router.post(
            VALUES ($1, $2, 'spent_on_order', $3)`,
           [req.user.id, -creditApplied, orderId]
         );
+      }
+
+      // Deduct loyalty points atomically with the order. Re-validates against the freshest
+      // locked balance — if it changed since the calculation above (e.g. a race with a second
+      // simultaneous checkout tab), this throws and the whole order transaction rolls back.
+      if (pointsRedeemed > 0) {
+        await redeemPoints(c, req.user.id, pointsRedeemed, orderId);
       }
 
       // Clear the cart so users don't reorder by accident
@@ -336,7 +366,31 @@ router.get('/:id', optionalAuth, asyncHandler(async (req, res) => {
     throw notFound('Order');
   }
   const items = await query('SELECT * FROM order_items WHERE order_id = $1', [order.id]);
-  res.json({ ...order, items: items.rows });
+
+  // No column on `orders` stores this — points are earned at payment confirmation (not order
+  // creation), so both fields are 0 for an order that hasn't been paid yet, which is expected.
+  const { rows: loyaltyRows } = await query(
+    `SELECT delta, reason FROM loyalty_ledger
+     WHERE related_id = $1 AND reason IN ('earned_purchase', 'redeemed_credit')`,
+    [order.id]
+  );
+  const points_earned = loyaltyRows.find((r) => r.reason === 'earned_purchase')?.delta ?? 0;
+  const points_redeemed = -(loyaltyRows.find((r) => r.reason === 'redeemed_credit')?.delta ?? 0);
+  // Cedi-equivalent values are computed from the *current* redeem rate for display purposes only
+  // (the ledger stores point deltas, not a frozen cedi value) — fine since this rate rarely changes.
+  const cfg = await getSettings();
+  const redeemRate = Number(cfg.loyalty_redeem_rate_ghs ?? 0.1);
+
+  res.json({
+    ...order,
+    items: items.rows,
+    loyalty: {
+      points_earned,
+      points_redeemed,
+      points_earned_ghs: +(points_earned * redeemRate).toFixed(2),
+      points_redeemed_ghs: +(points_redeemed * redeemRate).toFixed(2),
+    },
+  });
 }));
 
 export default router;
