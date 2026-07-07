@@ -1753,7 +1753,7 @@ router.get('/today', asyncHandler(async (req, res) => {
     query(`SELECT r.id, r.rma_number, r.created_at,
                   u.name AS customer_name, o.order_number,
                   COUNT(ri.id)::int AS items_count,
-                  STRING_AGG(DISTINCT ri.reason_code, ', ') AS reason_summary
+                  STRING_AGG(DISTINCT r.reason_code, ', ') AS reason_summary
            FROM returns r
            JOIN users u ON u.id = r.user_id
            JOIN orders o ON o.id = r.order_id
