@@ -1,5 +1,11 @@
 // TODO: Replace with real business details once registered.
 import PDFDocument from 'pdfkit';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FONT_REGULAR = path.join(__dirname, '../assets/fonts/DejaVuSans.ttf');
+const FONT_BOLD = path.join(__dirname, '../assets/fonts/DejaVuSans-Bold.ttf');
 
 const BUSINESS = {
   name:    'UrbanPulse Ltd',
@@ -35,13 +41,17 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     doc.on('end',  () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
+    // Real font with a Cedi-sign (₵) glyph — PDFKit's standard Helvetica doesn't have one.
+    doc.registerFont('Sans', FONT_REGULAR);
+    doc.registerFont('Sans-Bold', FONT_BOLD);
+
     // ── Wordmark ──────────────────────────────────────────────────────────────
-    doc.font('Helvetica-Bold').fontSize(20).fillColor(TEXT)
+    doc.font('Sans-Bold').fontSize(20).fillColor(TEXT)
        .text('urban', 50, 52, { continued: true });
     doc.fillColor(ACCENT).text('pulse');
 
     // ── "RECEIPT" eyebrow + order number (right-aligned) ─────────────────────
-    doc.font('Helvetica').fontSize(8).fillColor(MUTED)
+    doc.font('Sans').fontSize(8).fillColor(MUTED)
        .text('RECEIPT', 50, 52, { align: 'right', width: 495 });
     doc.font('Courier-Bold').fontSize(11).fillColor(TEXT)
        .text(order.order_number, 50, 63, { align: 'right', width: 495 });
@@ -64,14 +74,14 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     ].filter(Boolean);
 
     const IY = 104;
-    doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('FROM', 50, IY);
-    doc.font('Helvetica').fontSize(9).fillColor(MUTED)
+    doc.font('Sans-Bold').fontSize(8).fillColor(MUTED).text('FROM', 50, IY);
+    doc.font('Sans').fontSize(9).fillColor(MUTED)
        .text(BUSINESS.name,    50, IY + 13)
        .text(BUSINESS.address, 50, IY + 25)
        .text(BUSINESS.email,   50, IY + 37);
 
-    doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('BILL TO', 310, IY);
-    doc.font('Helvetica').fontSize(9).fillColor(MUTED)
+    doc.font('Sans-Bold').fontSize(8).fillColor(MUTED).text('BILL TO', 310, IY);
+    doc.font('Sans').fontSize(9).fillColor(MUTED)
        .text(customerName,  310, IY + 13)
        .text(customerEmail, 310, IY + 25);
     let ay = IY + 37;
@@ -87,7 +97,7 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     const paymentLabel = order.payment_method === 'cod' ? 'Cash on Delivery' : 'Paystack';
     const statusText   = (order.status || '').replace(/_/g, ' ');
 
-    doc.font('Helvetica').fontSize(8.5).fillColor(MUTED)
+    doc.font('Sans').fontSize(8.5).fillColor(MUTED)
        .text(
          `Order date: ${orderDate}   ·   Payment: ${paymentLabel}   ·   Status: ${statusText}`,
          50, MY + 9, { width: 495 }
@@ -97,7 +107,7 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     const TY  = MY + 32;
     const COL = { item: 50, qty: 340, unit: 390, total: 470 };
 
-    doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED);
+    doc.font('Sans-Bold').fontSize(8).fillColor(MUTED);
     doc.text('ITEM',  COL.item,  TY);
     doc.text('QTY',   COL.qty,   TY);
     doc.text('UNIT',  COL.unit,  TY);
@@ -110,15 +120,15 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
       const variantRaw  = (it.variant_description || '').trim().replace(/^\/+|\/+$/g, '').trim();
       const hasVariant  = variantRaw.length > 0;
 
-      doc.font('Helvetica').fontSize(9).fillColor(TEXT)
+      doc.font('Sans').fontSize(9).fillColor(TEXT)
          .text(it.product_name, COL.item, ry, { width: 275 });
 
       if (hasVariant) {
-        doc.font('Helvetica').fontSize(8).fillColor(MUTED)
+        doc.font('Sans').fontSize(8).fillColor(MUTED)
            .text(variantRaw, COL.item, ry + 12, { width: 275 });
       }
 
-      doc.font('Helvetica').fontSize(9).fillColor(TEXT)
+      doc.font('Sans').fontSize(9).fillColor(TEXT)
          .text(String(it.quantity),        COL.qty,   ry)
          .text(formatGHS(it.unit_price),   COL.unit,  ry)
          .text(formatGHS(lineTotal),       COL.total, ry);
@@ -140,7 +150,7 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     let ty = ry + 18;
 
     function totRow(label, value, bold = false) {
-      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica')
+      doc.font(bold ? 'Sans-Bold' : 'Sans')
          .fontSize(bold ? 10 : 9)
          .fillColor(bold ? TEXT : MUTED)
          .text(label, TX, ty)
@@ -161,7 +171,7 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     // ── Footer ────────────────────────────────────────────────────────────────
     const FY = doc.page.height - 70;
     doc.moveTo(50, FY).lineTo(545, FY).strokeColor(BORDER).lineWidth(0.5).stroke();
-    doc.font('Helvetica').fontSize(8.5).fillColor(MUTED)
+    doc.font('Sans').fontSize(8.5).fillColor(MUTED)
        .text('Thank you for shopping with UrbanPulse.',
              50, FY + 10, { align: 'center', width: 495 })
        .text('Returns accepted within 30 days — see urbanpulse.com.gh/returns-policy',

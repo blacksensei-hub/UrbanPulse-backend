@@ -3,6 +3,9 @@ import { logger } from './logger.js';
 
 let transporter = null;
 
+const frontendUrl = () => process.env.FRONTEND_URL || 'http://localhost:5173';
+const formatGHS = (amount) => `GH₵ ${Number(amount || 0).toFixed(2)}`;
+
 function getTransporter() {
   if (transporter) return transporter;
   if (!process.env.SMTP_HOST) {
@@ -48,11 +51,30 @@ export const emailTemplates = {
       text: `Hi ${first},\n\nYour UrbanPulse account was signed in from:\nDevice: ${device}\nIP: ${ip}\nTime: ${new Date(time).toUTCString()}\n\nNot you? Change your password now.`,
     };
   },
-  orderConfirmation: (order) => ({
-    subject: `Order ${order.order_number} confirmed`,
-    html: `<h1>Thanks for your order</h1><p>Your order <strong>${order.order_number}</strong> has been received. Total: GH₵ ${order.total}.</p>`,
-    text: `Thanks for your order ${order.order_number}. Total: GH₵ ${order.total}.`,
-  }),
+  orderConfirmation: (order, items = []) => {
+    const orderUrl = `${frontendUrl()}/account/orders`;
+    const itemRows = items.map((it) =>
+      `<tr>
+         <td style="padding:8px 8px 8px 0;vertical-align:top"><img src="${it.product_image ?? ''}" width="60" height="72" style="border-radius:6px;object-fit:cover;display:block"/></td>
+         <td style="padding:8px 12px;vertical-align:top">
+           <strong style="font-size:14px">${it.product_name}</strong><br/>
+           <span style="color:#888;font-size:12px">${it.variant_description ?? ''}</span>
+         </td>
+         <td style="padding:8px 0;vertical-align:top;white-space:nowrap;font-size:14px">${formatGHS(it.unit_price)} × ${it.quantity}</td>
+       </tr>`
+    ).join('');
+    return {
+      subject: `Order ${order.order_number} confirmed`,
+      html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;color:#111">
+               <h1 style="font-size:20px">Thanks for your order</h1>
+               <p style="font-size:15px">Your order <strong>${order.order_number}</strong> has been received.</p>
+               ${itemRows ? `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:16px 0;width:100%">${itemRows}</table>` : ''}
+               <p style="font-size:15px">Total: <strong>${formatGHS(order.total)}</strong></p>
+               <a href="${orderUrl}" style="display:inline-block;margin-top:8px;padding:12px 28px;background:#000;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">View order</a>
+             </div>`,
+      text: `Thanks for your order ${order.order_number}.\n\n${items.map((it) => `${it.product_name} × ${it.quantity}`).join('\n')}\n\nTotal: ${formatGHS(order.total)}\n\nView your order: ${orderUrl}`,
+    };
+  },
   processing: (o) => ({
     subject: `Order ${o.order_number} is being prepared`,
     html: `<p>Good news! Your order <strong>${o.order_number}</strong> is now being prepared.</p>`,
@@ -88,8 +110,8 @@ export const emailTemplates = {
   },
   refunded: (o) => ({
     subject: `Refund processed for order ${o.order_number}`,
-    html: `<p>Your refund for order <strong>${o.order_number}</strong> has been processed. GH₵ ${o.total} will be returned to your original payment method within 5–10 business days.</p>`,
-    text: `Your refund for order ${o.order_number} has been processed. GH₵ ${o.total} will be returned within 5–10 business days.`,
+    html: `<p>Your refund for order <strong>${o.order_number}</strong> has been processed. ${formatGHS(o.total)} will be returned to your original payment method within 5–10 business days.</p>`,
+    text: `Your refund for order ${o.order_number} has been processed. ${formatGHS(o.total)} will be returned within 5–10 business days.`,
   }),
   returnRequested: (ret, customerName) => ({
     subject: `New return request — ${ret.rma_number}`,
@@ -115,11 +137,11 @@ export const emailTemplates = {
     text: `Your return request ${ret.rma_number} was not approved.${ret.admin_note ? `\nReason: ${ret.admin_note}` : ''}\nContact support if you have questions.`,
   }),
   returnRefunded: (ret, amount) => ({
-    subject: `Your refund of GH₵ ${Number(amount).toFixed(2)} has been issued`,
+    subject: `Your refund of ${formatGHS(amount)} has been issued`,
     html: `<p>Good news — your return <strong>${ret.rma_number}</strong> has been processed.</p>
-           <p>A ${ret.resolution === 'store_credit' ? 'store credit' : 'refund'} of <strong>GH₵ ${Number(amount).toFixed(2)}</strong> has been issued to your account.</p>
+           <p>A ${ret.resolution === 'store_credit' ? 'store credit' : 'refund'} of <strong>${formatGHS(amount)}</strong> has been issued to your account.</p>
            ${ret.resolution === 'store_credit' ? '<p>Your store credit is available immediately for your next order.</p>' : '<p>Please allow 5–10 business days for the refund to appear.</p>'}`,
-    text: `Your return ${ret.rma_number} has been processed. A ${ret.resolution === 'store_credit' ? 'store credit' : 'refund'} of GH₵ ${Number(amount).toFixed(2)} has been issued.`,
+    text: `Your return ${ret.rma_number} has been processed. A ${ret.resolution === 'store_credit' ? 'store credit' : 'refund'} of ${formatGHS(amount)} has been issued.`,
   }),
   referralReward: ({ name }) => {
     const first = name.split(' ')[0];
@@ -141,7 +163,7 @@ export const emailTemplates = {
            <strong style="font-size:14px">${it.name}</strong><br/>
            <span style="color:#888;font-size:12px">${[it.size, it.color].filter(Boolean).join(' · ')}</span>
          </td>
-         <td style="padding:8px 0;vertical-align:top;white-space:nowrap;font-size:14px">GH₵ ${Number(it.price).toFixed(2)} × ${it.quantity}</td>
+         <td style="padding:8px 0;vertical-align:top;white-space:nowrap;font-size:14px">${formatGHS(it.price)} × ${it.quantity}</td>
        </tr>`
     ).join('');
     const couponLine = coupon

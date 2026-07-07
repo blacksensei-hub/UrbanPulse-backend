@@ -1,6 +1,6 @@
 import express from 'express';
 import { verifyWebhookSignature } from '../utils/paystackHelper.js';
-import { tx } from '../db/index.js';
+import { tx, query } from '../db/index.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendSMS, smsTemplates } from '../utils/sms.js';
 import { logger } from '../utils/logger.js';
@@ -62,7 +62,11 @@ router.post('/paystack', (req, res) => {
           const email = order.email || order.shipping_address?.email;
           const phone = order.phone || order.shipping_address?.phone;
           if (email) {
-            sendEmail({ to: email, ...emailTemplates.orderConfirmation(order) }).catch(() => {});
+            const { rows: items } = await query(
+              'SELECT product_name, unit_price, variant_description, product_image, quantity FROM order_items WHERE order_id = $1',
+              [order.id]
+            );
+            sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items) }).catch(() => {});
           }
           if (phone) {
             sendSMS({ to: phone, message: smsTemplates.paid(order) }).catch(() => {});

@@ -2489,7 +2489,11 @@ router.post('/customers/:id/resend-confirmation', asyncHandler(async (req, res) 
   );
   if (!order) throw badRequest('No paid order found for this customer');
 
-  const tpl = emailTemplates.orderConfirmation(order);
+  const { rows: items } = await query(
+    'SELECT product_name, unit_price, variant_description, product_image, quantity FROM order_items WHERE order_id = $1',
+    [order.id]
+  );
+  const tpl = emailTemplates.orderConfirmation(order, items);
   await sendEmail({ to: customer.email, ...tpl });
 
   await query(
