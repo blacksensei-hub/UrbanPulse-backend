@@ -631,7 +631,7 @@ router.put(
 
       for (const e of edits) {
         await client.query(
-          'INSERT INTO order_edits (order_id, field_name, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
+          'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
           [orderId, e.field_name, e.before_value, e.after_value, reason, req.user.id]
         );
       }
@@ -664,7 +664,7 @@ router.post(
         [orderId, status, `Force-set by admin: ${reason}`]
       );
       await client.query(
-        'INSERT INTO order_edits (order_id, field_name, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
+        'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
         [orderId, 'status', order.status, status, reason, req.user.id]
       );
       if (['cancelled', 'refunded'].includes(status) && order.payment_status === 'paid') {
@@ -699,7 +699,7 @@ router.post(
 
     const { rows: [sums] } = await query(
       `SELECT COALESCE(SUM((after_value->>'amount')::numeric), 0) AS already_refunded
-       FROM order_edits WHERE order_id=$1 AND field_name='manual_refund'`,
+       FROM order_edits WHERE order_id=$1 AND field='manual_refund'`,
       [orderId]
     );
     const remaining = Number(order.total) - Number(sums.already_refunded);
@@ -725,7 +725,7 @@ router.post(
         );
       }
       await client.query(
-        'INSERT INTO order_edits (order_id, field_name, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
+        'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
         [orderId, 'manual_refund', { amount: 0 }, { amount: Number(amount_ghs), method }, reason, req.user.id]
       );
       await clawbackPointsForOrder(client, orderId);
@@ -1406,7 +1406,7 @@ router.get('/customers/flags/bulk', asyncHandler(async (req, res) => {
   if (!ids.length) return res.json({});
   if (ids.length > 500) throw badRequest('Too many IDs');
   const { rows } = await query(
-    'SELECT * FROM customer_flags WHERE user_id = ANY($1) ORDER BY created_at ASC',
+    'SELECT * FROM customer_flags WHERE customer_id = ANY($1) ORDER BY created_at ASC',
     [ids]
   );
   const grouped = {};
@@ -2424,7 +2424,7 @@ router.post(
 
 router.get('/customers/:id/flags', asyncHandler(async (req, res) => {
   const { rows } = await query(
-    'SELECT * FROM customer_flags WHERE user_id=$1 ORDER BY created_at ASC',
+    'SELECT * FROM customer_flags WHERE customer_id=$1 ORDER BY created_at ASC',
     [Number(req.params.id)]
   );
   res.json({ flags: rows });
@@ -2439,7 +2439,7 @@ router.post(
     const { flag, label, color } = req.body;
     const cid = Number(req.params.id);
     const { rows: [row] } = await query(
-      `INSERT INTO customer_flags (user_id, flag, label, color, created_by)
+      `INSERT INTO customer_flags (customer_id, flag, label, color, created_by)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
       [cid, flag, label ?? flag, color ?? '#6366f1', req.user.id]
     );
@@ -2452,7 +2452,7 @@ router.delete('/customers/:id/flags/:flagId', asyncHandler(async (req, res) => {
   const cid = Number(req.params.id);
   const fid = Number(req.params.flagId);
   const { rows: [row] } = await query(
-    'DELETE FROM customer_flags WHERE id=$1 AND user_id=$2 RETURNING id',
+    'DELETE FROM customer_flags WHERE id=$1 AND customer_id=$2 RETURNING id',
     [fid, cid]
   );
   if (!row) throw notFound('Flag not found');
