@@ -7,6 +7,7 @@ const router = express.Router();
 const PUBLIC_KEYS = new Set([
   'store_name', 'support_email', 'support_whatsapp', 'business_address', 'currency',
   'shipping_standard_ghs', 'shipping_express_ghs', 'free_shipping_threshold_ghs',
+  'tax_rate_percent',
   'maintenance_mode', 'maintenance_message',
   'feature_referrals', 'feature_wishlist', 'feature_reviews',
   'feature_preorders', 'feature_cod', 'feature_paystack', 'feature_loyalty',

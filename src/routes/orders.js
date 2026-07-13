@@ -273,8 +273,14 @@ router.post(
         await redeemPoints(c, req.user.id, pointsRedeemed, orderId);
       }
 
-      // Clear the cart so users don't reorder by accident
-      await c.query('DELETE FROM cart_items WHERE cart_id = $1', [cart_id]);
+      // Clear the cart so users don't reorder by accident — but only for COD,
+      // where order creation IS the commitment. For Paystack orders the cart
+      // survives until the checkout session is successfully created (see
+      // checkout.js), so a payment-init failure never strands the customer
+      // with a placed order and an empty cart.
+      if (payment_method === 'cod') {
+        await c.query('DELETE FROM cart_items WHERE cart_id = $1', [cart_id]);
+      }
 
       return o.rows[0];
     });
