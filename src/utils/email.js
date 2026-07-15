@@ -52,6 +52,18 @@ function ctaButton(label, href) {
   </table>`;
 }
 
+// Secondary CTA — outline style, for a lower-emphasis action alongside the
+// primary accent button (e.g. "Track with {carrier}" next to "View your order").
+function ctaButtonOutline(label, href) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">
+    <tr>
+      <td style="background-color:transparent;border:1px solid ${COLOR.text};border-radius:999px;">
+        <a href="${href}" style="display:inline-block;padding:13px 27px;font-family:${FONT};font-size:14px;font-weight:600;color:${COLOR.text};text-decoration:none;border-radius:999px;">${escapeHtml(label)}</a>
+      </td>
+    </tr>
+  </table>`;
+}
+
 function eyebrow(text) {
   return `<p style="margin:0 0 12px;font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:${COLOR.muted};">${escapeHtml(text)}</p>`;
 }
@@ -292,18 +304,47 @@ export const emailTemplates = {
     };
   },
 
-  shipped: (o, trackingNumber = null) => {
+  shipped: (o, trackingNumber = null, { carrier = null, trackingUrl = null, expressRateGhs = null } = {}) => {
+    const orderUrl = `${frontendUrl()}/account/orders/${o.id}`;
+    const deliveryLine = shippingLabel(o.shipping_cost, expressRateGhs);
+
+    // Graceful degradation: with no tracking number, render exactly today's
+    // plain copy — no empty box, no "Tracking: N/A", no layout change at all.
+    const trackingBlock = trackingNumber ? `
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:16px 0 0;">
+        <tr>
+          <td style="background-color:${COLOR.bg};border:1px solid ${COLOR.border};border-radius:8px;padding:16px;">
+            <p style="margin:0 0 6px;font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:${COLOR.muted};">Tracking number</p>
+            <p style="margin:0;font-family:${FONT};font-size:18px;font-weight:700;letter-spacing:0.5px;color:${COLOR.text};">${escapeHtml(trackingNumber)}</p>
+            ${carrier ? `<p style="margin:6px 0 0;font-size:13px;color:${COLOR.muted};">${escapeHtml(carrier)}</p>` : ''}
+          </td>
+        </tr>
+      </table>` : '';
+
+    const secondaryCta = (trackingUrl && carrier) ? ctaButtonOutline(`Track with ${carrier}`, trackingUrl) : '';
+
     const bodyHtml = `
       ${eyebrow('Order shipped')}
       ${h1('Your order is on its way.')}
       <p style="margin:0 0 4px;font-family:${MONO};font-size:13px;color:${COLOR.muted};">${escapeHtml(o.order_number)}</p>
-      ${trackingNumber ? `<p style="margin:16px 0 0;font-size:14px;">Tracking number: <strong style="font-family:${MONO};">${escapeHtml(trackingNumber)}</strong></p>` : ''}
-      ${ctaButton('View your order', `${frontendUrl()}/account/orders/${o.id}`)}
+      ${trackingBlock}
+      <p style="margin:16px 0 0;font-size:13px;color:${COLOR.muted};">${deliveryLine}</p>
+      ${ctaButton('View your order', orderUrl)}
+      ${secondaryCta}
     `;
+
+    const preheader = trackingNumber
+      ? `Order ${o.order_number} shipped · Tracking ${trackingNumber}`
+      : `Order ${o.order_number} is on its way`;
+
+    const trackingText = trackingNumber
+      ? `\nTracking number: ${trackingNumber}${carrier ? ` (${carrier})` : ''}${trackingUrl ? `\nTrack: ${trackingUrl}` : ''}`
+      : '';
+
     return {
       subject: `Order ${o.order_number} has shipped`,
-      html: renderLayout({ preheader: `Order ${o.order_number} is on its way`, bodyHtml }),
-      text: `Order ${o.order_number} has shipped.${trackingNumber ? `\nTracking number: ${trackingNumber}` : ''}\n\nView your order: ${frontendUrl()}/account/orders/${o.id}${renderTextFooter()}`,
+      html: renderLayout({ preheader, bodyHtml }),
+      text: `Order ${o.order_number} has shipped.${trackingText}\n\n${deliveryLine}\n\nView your order: ${orderUrl}${renderTextFooter()}`,
     };
   },
 

@@ -37,6 +37,19 @@ function checkJobCooldown(jobId) {
   jobLastRun.set(jobId, Date.now());
 }
 
+// Builds the shipped-notification template from whatever tracking info is
+// already persisted on the order — used by every path that can send a
+// 'shipped' notification, so any of them sends a complete email as long as a
+// tracking number is on file, not only the request that just set it.
+async function shippedTemplateFor(order) {
+  const cfg = await getSettings();
+  return emailTemplates.shipped(order, order.tracking_number, {
+    carrier: order.tracking_carrier,
+    trackingUrl: order.tracking_url,
+    expressRateGhs: Number(cfg.shipping_express_ghs ?? 80),
+  });
+}
+
 // Rolls back product.preorder_count for preorder items in an order; safe to call in any tx
 async function rollbackPreorderCount(client, orderId) {
   const { rows } = await client.query(
@@ -552,7 +565,9 @@ router.put(
         const NOTIFY_ON = new Set(['paid', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']);
         if (NOTIFY_ON.has(status)) {
           const email = order.email || order.shipping_address?.email;
-          const tpl = emailTemplates[status]?.(order);
+          // `order` here still has the pre-update tracking columns, which is fine —
+          // this route never edits tracking data itself, only status/address/items.
+          const tpl = status === 'shipped' ? await shippedTemplateFor(order) : emailTemplates[status]?.(order);
           if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
         }
       }
@@ -673,7 +688,7 @@ router.post(
     });
 
     const email = order.email || order.shipping_address?.email;
-    const tpl = emailTemplates[status]?.(order);
+    const tpl = status === 'shipped' ? await shippedTemplateFor(order) : emailTemplates[status]?.(order);
     if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
 
     await logAdminAction(req.user.id, 'order.force_status',
@@ -740,14 +755,22 @@ router.post(
 router.put(
   '/orders/:id/status',
   body('status').isIn(['pending','awaiting_confirmation','paid','processing','shipped','delivered','cancelled','refunded']),
+  body('tracking_number').optional().isString(),
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) throw badRequest('Validation', errors.array());
     const updatedOrder = await tx(async (c) => {
-      const { rows } = await c.query(
-        'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
-        [req.body.status, req.params.id]
-      );
+      // Only touches tracking_number when a value is actually provided — never
+      // clears a previously-persisted one on an unrelated status change.
+      const { rows } = req.body.tracking_number
+        ? await c.query(
+            'UPDATE orders SET status = $1, tracking_number = $3 WHERE id = $2 RETURNING *',
+            [req.body.status, req.params.id, req.body.tracking_number]
+          )
+        : await c.query(
+            'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+            [req.body.status, req.params.id]
+          );
       if (!rows[0]) throw notFound();
       const ord = rows[0];
       await c.query(
@@ -766,7 +789,9 @@ router.put(
     if (NOTIFY_ON.has(updatedOrder.status)) {
       const email = updatedOrder.email || updatedOrder.shipping_address?.email;
       const phone = updatedOrder.phone || updatedOrder.shipping_address?.phone;
-      const tpl = emailTemplates[updatedOrder.status]?.(updatedOrder);
+      const tpl = updatedOrder.status === 'shipped'
+        ? await shippedTemplateFor(updatedOrder)
+        : emailTemplates[updatedOrder.status]?.(updatedOrder);
       if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
       if (phone && smsTemplates[updatedOrder.status]) {
         sendSMS({ to: phone, message: smsTemplates[updatedOrder.status](updatedOrder) }).catch(() => {});
@@ -2036,13 +2061,20 @@ router.post(
     const succeeded = [], failed = [];
     for (const id of ids) {
       try {
-        const { rows: [order] } = await query('SELECT id, status, payment_status, email, phone, shipping_address FROM orders WHERE id = $1', [id]);
+        const { rows: [order] } = await query('SELECT * FROM orders WHERE id = $1', [id]);
         if (!order) { failed.push({ id, reason: 'Order not found' }); continue; }
         if (action === 'cancel' && ['cancelled', 'delivered', 'refunded'].includes(order.status)) {
           failed.push({ id, reason: `Cannot cancel order with status '${order.status}'` }); continue;
         }
         await tx(async (c) => {
-          await c.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [newStatus, id]);
+          // Only touches tracking_number when a value is actually provided — never
+          // clears a previously-persisted one when bulk-shipping without one.
+          if (newStatus === 'shipped' && tracking_number) {
+            await c.query('UPDATE orders SET status = $1, updated_at = NOW(), tracking_number = $3 WHERE id = $2', [newStatus, id, tracking_number]);
+            order.tracking_number = tracking_number;
+          } else {
+            await c.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [newStatus, id]);
+          }
           await c.query(
             'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
             [id, newStatus, tracking_number ?? null]
@@ -2055,9 +2087,7 @@ router.post(
         if (NOTIFY_ON.has(newStatus)) {
           const email = order.email || order.shipping_address?.email;
           const phone = order.phone || order.shipping_address?.phone;
-          const tpl = newStatus === 'shipped'
-            ? emailTemplates.shipped?.(order, tracking_number || null)
-            : emailTemplates[newStatus]?.(order);
+          const tpl = newStatus === 'shipped' ? await shippedTemplateFor(order) : emailTemplates[newStatus]?.(order);
           if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
           const smsTpl = smsTemplates[newStatus]?.(order);
           if (phone && smsTpl) sendSMS(phone, smsTpl).catch(() => {});
