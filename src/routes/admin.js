@@ -2055,8 +2055,10 @@ router.post(
         if (NOTIFY_ON.has(newStatus)) {
           const email = order.email || order.shipping_address?.email;
           const phone = order.phone || order.shipping_address?.phone;
-          const tpl = emailTemplates[newStatus]?.(order);
-          if (email && tpl) sendEmail(email, tpl.subject, tpl.html).catch(() => {});
+          const tpl = newStatus === 'shipped'
+            ? emailTemplates.shipped?.(order, tracking_number || null)
+            : emailTemplates[newStatus]?.(order);
+          if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
           const smsTpl = smsTemplates[newStatus]?.(order);
           if (phone && smsTpl) sendSMS(phone, smsTpl).catch(() => {});
         }
@@ -2088,12 +2090,12 @@ router.post(
           await query(`UPDATE returns SET status = 'approved', approved_at = NOW() WHERE id = $1`, [id]);
           const { rows: [u] } = await query('SELECT email FROM users WHERE id = $1', [ret.user_id]);
           const tpl = emailTemplates.returnApproved?.(ret);
-          if (u?.email && tpl) sendEmail(u.email, tpl.subject, tpl.html).catch(() => {});
+          if (u?.email && tpl) sendEmail({ to: u.email, ...tpl }).catch(() => {});
         } else {
           await query(`UPDATE returns SET status = 'rejected', rejected_at = NOW(), admin_note = $1 WHERE id = $2`, [admin_note ?? null, id]);
           const { rows: [u] } = await query('SELECT email FROM users WHERE id = $1', [ret.user_id]);
           const tpl = emailTemplates.returnRejected?.(ret);
-          if (u?.email && tpl) sendEmail(u.email, tpl.subject, tpl.html).catch(() => {});
+          if (u?.email && tpl) sendEmail({ to: u.email, ...tpl }).catch(() => {});
         }
         succeeded.push(id);
       } catch (err) { failed.push({ id, reason: err.message }); }
@@ -2493,7 +2495,14 @@ router.post('/customers/:id/resend-confirmation', asyncHandler(async (req, res) 
     'SELECT product_name, unit_price, variant_description, product_image, quantity FROM order_items WHERE order_id = $1',
     [order.id]
   );
-  const tpl = emailTemplates.orderConfirmation(order, items);
+  const { rows: couponRows } = await query(
+    'SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1',
+    [order.id]
+  );
+  const couponDiscount = couponRows[0] ? Number(couponRows[0].discount_amount) : 0;
+  const cfg = await getSettings();
+  const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
+  const tpl = emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs });
   await sendEmail({ to: customer.email, ...tpl });
 
   await query(

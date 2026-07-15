@@ -6,6 +6,7 @@ import { sendSMS, smsTemplates } from '../utils/sms.js';
 import { logger } from '../utils/logger.js';
 import { checkAndQualifyReferral } from '../utils/referral.js';
 import { awardPointsForOrder } from '../utils/loyalty.js';
+import { getSettings } from '../utils/settingsCache.js';
 
 const router = express.Router();
 
@@ -66,7 +67,14 @@ router.post('/paystack', (req, res) => {
               'SELECT product_name, unit_price, variant_description, product_image, quantity FROM order_items WHERE order_id = $1',
               [order.id]
             );
-            sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items) }).catch(() => {});
+            const { rows: couponRows } = await query(
+              'SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1',
+              [order.id]
+            );
+            const couponDiscount = couponRows[0] ? Number(couponRows[0].discount_amount) : 0;
+            const cfg = await getSettings();
+            const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
+            sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs }) }).catch(() => {});
           }
           if (phone) {
             sendSMS({ to: phone, message: smsTemplates.paid(order) }).catch(() => {});
