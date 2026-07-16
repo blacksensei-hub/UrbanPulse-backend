@@ -556,6 +556,9 @@ router.put(
       }
 
       if (status !== undefined && status !== order.status) {
+        if (status === 'cancelled' && order.payment_status === 'paid') {
+          throw badRequest('Cannot cancel a paid order — use Refund instead');
+        }
         edits.push({ field_name: 'status', before_value: order.status, after_value: status });
         await client.query('UPDATE orders SET status=$1, updated_at=NOW() WHERE id=$2', [status, orderId]);
         await client.query(
@@ -760,6 +763,12 @@ router.put(
     const errors = validationResult(req);
     if (!errors.isEmpty()) throw badRequest('Validation', errors.array());
     const updatedOrder = await tx(async (c) => {
+      if (req.body.status === 'cancelled') {
+        const { rows: [existing] } = await c.query('SELECT payment_status FROM orders WHERE id = $1', [req.params.id]);
+        if (existing?.payment_status === 'paid') {
+          throw badRequest('Cannot cancel a paid order — use Refund instead');
+        }
+      }
       // Only touches tracking_number when a value is actually provided — never
       // clears a previously-persisted one on an unrelated status change.
       const { rows } = req.body.tracking_number
@@ -814,11 +823,15 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
   let updated;
   await tx(async (c) => {
     const { rows: r } = await c.query(
-      `UPDATE orders SET payment_status = 'refunded', status = 'cancelled'
+      `UPDATE orders SET payment_status = 'refunded', status = 'refunded'
        WHERE id = $1 RETURNING *`,
       [req.params.id]
     );
     updated = r[0];
+    await c.query(
+      'INSERT INTO order_status_history (order_id, status, note) VALUES ($1,$2,$3)',
+      [order.id, 'refunded', 'Refunded via Paystack by admin']
+    );
 
     // Reverse any store credit spent on this order
     if (order.user_id) {
@@ -839,9 +852,43 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
         );
       }
     }
+
+    // Restock: only non-preorder items actually decremented stock at order
+    // creation (preorder items incremented products.preorder_count instead,
+    // which rollbackPreorderCount below already reverses) — refunding a
+    // preorder item's variant stock here would inflate it incorrectly.
+    const { rows: items } = await c.query(
+      'SELECT variant_id, quantity, is_preorder FROM order_items WHERE order_id = $1',
+      [order.id]
+    );
+    for (const item of items) {
+      if (item.is_preorder || !item.variant_id) continue;
+      const { rows: [v] } = await c.query(
+        'SELECT stock FROM product_variants WHERE id = $1 FOR UPDATE',
+        [item.variant_id]
+      );
+      if (!v) continue;
+      const stock_before = v.stock;
+      const stock_after = stock_before + item.quantity;
+      await c.query('UPDATE product_variants SET stock = $1 WHERE id = $2', [stock_after, item.variant_id]);
+      await c.query(
+        `INSERT INTO inventory_adjustments (variant_id, delta, reason, note, stock_before, stock_after, admin_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [item.variant_id, item.quantity, 'refund', `Refund on order ${order.order_number}`, stock_before, stock_after, req.user.id]
+      );
+    }
+
     // Roll back preorder_count for any preorder items in this order
     await rollbackPreorderCount(c, order.id);
     await clawbackPointsForOrder(c, order.id);
+
+    // Audit trail for the refunded amount, matching manual-refund's ledger pattern
+    // (orders has no dedicated refunded_at/amount column — order_status_history's
+    // timestamp above and this order_edits row together cover it).
+    await c.query(
+      'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
+      [order.id, 'refund', { amount: 0 }, { amount: Number(order.total) }, 'Full refund via admin Refund action', req.user.id]
+    );
   });
 
   await logAdminAction(req.user.id, 'order.refund',
@@ -1330,10 +1377,20 @@ router.post('/returns/:id/refund', asyncHandler(async (req, res) => {
     if (restock) {
       for (const item of returnItems) {
         if (item.variant_id) {
-          await c.query(
-            'UPDATE product_variants SET stock = stock + $1 WHERE id = $2',
-            [item.quantity, item.variant_id]
+          const { rows: [v] } = await c.query(
+            'SELECT stock FROM product_variants WHERE id = $1 FOR UPDATE',
+            [item.variant_id]
           );
+          if (v) {
+            const stock_before = v.stock;
+            const stock_after = stock_before + item.quantity;
+            await c.query('UPDATE product_variants SET stock = $1 WHERE id = $2', [stock_after, item.variant_id]);
+            await c.query(
+              `INSERT INTO inventory_adjustments (variant_id, delta, reason, note, stock_before, stock_after, admin_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+              [item.variant_id, item.quantity, 'refund', `Return refund — RMA ${ret.rma_number}`, stock_before, stock_after, req.user.id]
+            );
+          }
         }
         await c.query(
           'UPDATE return_items SET restocked = TRUE WHERE id = $1',
@@ -2065,6 +2122,9 @@ router.post(
         if (!order) { failed.push({ id, reason: 'Order not found' }); continue; }
         if (action === 'cancel' && ['cancelled', 'delivered', 'refunded'].includes(order.status)) {
           failed.push({ id, reason: `Cannot cancel order with status '${order.status}'` }); continue;
+        }
+        if (action === 'cancel' && order.payment_status === 'paid') {
+          failed.push({ id, reason: 'Cannot cancel a paid order — use Refund instead' }); continue;
         }
         await tx(async (c) => {
           // Only touches tracking_number when a value is actually provided — never
