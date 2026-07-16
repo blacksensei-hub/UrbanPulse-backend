@@ -64,6 +64,22 @@ export const COOKIE_OPTS = {
   path: '/',
 };
 
+// A cookie's identity to the browser is its name + domain + path — httpOnly/
+// secure/sameSite don't factor in, so clearing only needs to vary those two.
+// No COOKIE_DOMAIN has ever been used here, so the one concrete legacy shape
+// this codebase's own history supports is a pre-proxy setup scoping cookies
+// to '/api' instead of today's '/'. This is a best-effort cleanup for that
+// specific plausible variant, not a claim of exhaustive forensic coverage of
+// every attribute combination a cookie could ever have been set with.
+const LEGACY_COOKIE_PATHS = ['/', '/api'];
+
+export function clearLegacyAuthCookies(res) {
+  for (const path of LEGACY_COOKIE_PATHS) {
+    res.clearCookie('accessToken', { path });
+    res.clearCookie('refreshToken', { path });
+  }
+}
+
 export const viewAsMiddleware = async (req, _res, next) => {
   const token = req.headers['x-view-as-token'];
   if (!token) return next();
