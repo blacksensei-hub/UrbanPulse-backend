@@ -7,7 +7,7 @@ import { generateSecret, verifySync, generateURI } from 'otplib';
 import QRCode from 'qrcode';
 import { query, tx } from '../db/index.js';
 import { asyncHandler, badRequest, unauthorized, HttpError } from '../utils/helpers.js';
-import { signAccess, signRefresh, requireAuth, COOKIE_OPTS, viewAsMiddleware, rejectViewAsWrites, clearLegacyAuthCookies } from '../middleware/auth.js';
+import { signAccess, signRefresh, requireAuth, COOKIE_OPTS, viewAsMiddleware, rejectViewAsWrites } from '../middleware/auth.js';
 import { authLimiter, dataExportLimiter } from '../utils/rateLimiter.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { generateReferralCode } from '../utils/referral.js';
@@ -110,7 +110,6 @@ async function finishLogin(user, req, res) {
     await sendNewDeviceAlert(user, req);
   }
 
-  clearLegacyAuthCookies(res);
   res
     .cookie('accessToken', access, { ...COOKIE_OPTS, maxAge: 15 * 60 * 1000 })
     .cookie('refreshToken', refresh, { ...COOKIE_OPTS, maxAge: 7 * 24 * 60 * 60 * 1000 });
@@ -203,7 +202,6 @@ router.post(
     await createSession(user.id, refresh, req);
     await logLoginEvent(user.id, req, true, 'password_ok');
 
-    clearLegacyAuthCookies(res);
     res
       .cookie('accessToken', access, { ...COOKIE_OPTS, maxAge: 15 * 60 * 1000 })
       .cookie('refreshToken', refresh, { ...COOKIE_OPTS, maxAge: 7 * 24 * 60 * 60 * 1000 })
