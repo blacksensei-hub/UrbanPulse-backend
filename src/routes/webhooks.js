@@ -74,10 +74,12 @@ router.post('/paystack', (req, res) => {
             const couponDiscount = couponRows[0] ? Number(couponRows[0].discount_amount) : 0;
             const cfg = await getSettings();
             const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
-            sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs }) }).catch(() => {});
+            sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs }) })
+              .catch((err) => logger.error('Order confirmation email failed', { orderId: order.id, err: err.message }));
           }
           if (phone) {
-            sendSMS({ to: phone, message: smsTemplates.paid(order) }).catch(() => {});
+            sendSMS({ to: phone, message: smsTemplates.paid(order) })
+              .catch((err) => logger.error('Order confirmation SMS failed', { orderId: order.id, err: err.message }));
           }
           checkAndQualifyReferral(order.id, order.user_id).catch((err) =>
             logger.error(`Referral qualify error (order ${order.id}): ${err.message}`)

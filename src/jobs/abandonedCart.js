@@ -14,7 +14,8 @@ async function getActiveCoupon() {
        ORDER BY created_at DESC LIMIT 1`
     );
     return rows[0]?.code ?? null;
-  } catch {
+  } catch (err) {
+    logger.error({ err }, 'abandonedCartJob: getActiveCoupon query failed');
     return null;
   }
 }

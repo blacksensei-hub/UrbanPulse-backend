@@ -176,7 +176,10 @@ function getTransporter() {
 }
 
 export async function sendEmail({ to, subject, html, text }) {
-  const settings = await getSettings().catch(() => ({}));
+  const settings = await getSettings().catch((err) => {
+    logger.error('sendEmail: getSettings failed, falling back to default contact info', { err: err.message });
+    return {};
+  });
   const supportEmail = settings.support_email || 'support@urbanpulse.com.gh';
   const waDigits = (settings.support_whatsapp || '').replace(/\D/g, '');
   const tokens = {

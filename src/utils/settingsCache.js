@@ -1,4 +1,5 @@
 import { query } from '../db/index.js';
+import { logger } from './logger.js';
 
 let cache = null;
 
@@ -20,7 +21,11 @@ export function requireFeature(key) {
       if (s[key] === 'false' || s[key] === false) {
         return res.status(503).json({ error: 'This feature is currently disabled' });
       }
-    } catch { /* fail open on cache errors */ }
+    } catch (err) {
+      // Fail open — a broken settings cache shouldn't block requests — but
+      // still surface it, since it's a real operational problem either way.
+      logger.error('requireFeature settings check failed', { key, err: err.message });
+    }
     next();
   };
 }

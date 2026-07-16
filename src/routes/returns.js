@@ -4,6 +4,7 @@ import { asyncHandler, badRequest, notFound, buildRMANumber } from '../utils/hel
 import { requireAuth } from '../middleware/auth.js';
 import { canReturnOrder } from '../utils/returns.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -96,7 +97,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     sendEmail({
       to: adminEmail,
       ...emailTemplates.returnRequested(returnRecord, req.user.name),
-    }).catch(() => {});
+    }).catch((err) => logger.error('Return-requested admin notification email failed', { returnId: returnRecord.id, err: err.message }));
   }
 
   res.status(201).json(returnRecord);

@@ -21,6 +21,7 @@ import { getSettings, invalidateSettings } from '../utils/settingsCache.js';
 import { runAbandonedCartJob } from '../jobs/abandonedCart.js';
 import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
 import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
+import { logger } from '../utils/logger.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -571,7 +572,8 @@ router.put(
           // `order` here still has the pre-update tracking columns, which is fine —
           // this route never edits tracking data itself, only status/address/items.
           const tpl = status === 'shipped' ? await shippedTemplateFor(order) : emailTemplates[status]?.(order);
-          if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+          if (email && tpl) sendEmail({ to: email, ...tpl })
+            .catch((err) => logger.error('Order status-change email failed', { orderId: order.id, status, err: err.message }));
         }
       }
 
@@ -692,7 +694,8 @@ router.post(
 
     const email = order.email || order.shipping_address?.email;
     const tpl = status === 'shipped' ? await shippedTemplateFor(order) : emailTemplates[status]?.(order);
-    if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+    if (email && tpl) sendEmail({ to: email, ...tpl })
+      .catch((err) => logger.error('Force-status email failed', { orderId, status, err: err.message }));
 
     await logAdminAction(req.user.id, 'order.force_status',
       { id: orderId, from: order.status, to: status, reason }, req.ip);
@@ -801,9 +804,11 @@ router.put(
       const tpl = updatedOrder.status === 'shipped'
         ? await shippedTemplateFor(updatedOrder)
         : emailTemplates[updatedOrder.status]?.(updatedOrder);
-      if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+      if (email && tpl) sendEmail({ to: email, ...tpl })
+        .catch((err) => logger.error('Order status-change email failed', { orderId: updatedOrder.id, status: updatedOrder.status, err: err.message }));
       if (phone && smsTemplates[updatedOrder.status]) {
-        sendSMS({ to: phone, message: smsTemplates[updatedOrder.status](updatedOrder) }).catch(() => {});
+        sendSMS({ to: phone, message: smsTemplates[updatedOrder.status](updatedOrder) })
+          .catch((err) => logger.error('Order status-change SMS failed', { orderId: updatedOrder.id, status: updatedOrder.status, err: err.message }));
       }
     }
     res.json(updatedOrder);
@@ -897,7 +902,8 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
   const email = order.email || order.shipping_address?.email;
   if (email) {
     const tpl = emailTemplates.refunded?.(updated);
-    if (tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+    if (tpl) sendEmail({ to: email, ...tpl })
+      .catch((err) => logger.error('Refund email failed', { orderId: order.id, err: err.message }));
   }
 
   res.json(updated);
@@ -924,9 +930,11 @@ router.post('/orders/:id/confirm-cod', asyncHandler(async (req, res) => {
   const email = order.email || order.shipping_address?.email;
   const phone = order.phone || order.shipping_address?.phone;
   const tpl = emailTemplates.processing?.(updated[0]);
-  if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+  if (email && tpl) sendEmail({ to: email, ...tpl })
+    .catch((err) => logger.error('COD confirm email failed', { orderId: order.id, err: err.message }));
   if (phone && smsTemplates.processing) {
-    sendSMS({ to: phone, message: smsTemplates.processing(updated[0]) }).catch(() => {});
+    sendSMS({ to: phone, message: smsTemplates.processing(updated[0]) })
+      .catch((err) => logger.error('COD confirm SMS failed', { orderId: order.id, err: err.message }));
   }
   res.json(updated[0]);
 }));
@@ -960,11 +968,14 @@ router.post('/orders/:id/mark-paid', asyncHandler(async (req, res) => {
   const email = updatedOrder.email || updatedOrder.shipping_address?.email;
   const phone = updatedOrder.phone || updatedOrder.shipping_address?.phone;
   const tpl = emailTemplates.delivered?.(updatedOrder);
-  if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+  if (email && tpl) sendEmail({ to: email, ...tpl })
+    .catch((err) => logger.error('COD mark-paid email failed', { orderId: updatedOrder.id, err: err.message }));
   if (phone && smsTemplates.delivered) {
-    sendSMS({ to: phone, message: smsTemplates.delivered(updatedOrder) }).catch(() => {});
+    sendSMS({ to: phone, message: smsTemplates.delivered(updatedOrder) })
+      .catch((err) => logger.error('COD mark-paid SMS failed', { orderId: updatedOrder.id, err: err.message }));
   }
-  checkAndQualifyReferral(updatedOrder.id, updatedOrder.user_id).catch(() => {});
+  checkAndQualifyReferral(updatedOrder.id, updatedOrder.user_id)
+    .catch((err) => logger.error('Referral qualify check failed', { orderId: updatedOrder.id, err: err.message }));
   res.json(updatedOrder);
 }));
 
@@ -1282,7 +1293,8 @@ router.post('/returns/:id/approve', asyncHandler(async (req, res) => {
 
   const { rows: [customer] } = await query('SELECT email, name FROM users WHERE id = $1', [ret.user_id]);
   if (customer?.email) {
-    sendEmail({ to: customer.email, ...emailTemplates.returnApproved(updated) }).catch(() => {});
+    sendEmail({ to: customer.email, ...emailTemplates.returnApproved(updated) })
+      .catch((err) => logger.error('Return-approved email failed', { returnId: ret.id, rma: ret.rma_number, err: err.message }));
   }
 
   res.json(updated);
@@ -1303,7 +1315,8 @@ router.post('/returns/:id/reject', asyncHandler(async (req, res) => {
 
   const { rows: [customer] } = await query('SELECT email, name FROM users WHERE id = $1', [ret.user_id]);
   if (customer?.email) {
-    sendEmail({ to: customer.email, ...emailTemplates.returnRejected(updated) }).catch(() => {});
+    sendEmail({ to: customer.email, ...emailTemplates.returnRejected(updated) })
+      .catch((err) => logger.error('Return-rejected email failed', { returnId: ret.id, rma: ret.rma_number, err: err.message }));
   }
 
   res.json(updated);
@@ -1417,7 +1430,8 @@ router.post('/returns/:id/refund', asyncHandler(async (req, res) => {
 
   const { rows: [customer] } = await query('SELECT email, name FROM users WHERE id = $1', [ret.user_id]);
   if (customer?.email) {
-    sendEmail({ to: customer.email, ...emailTemplates.returnRefunded(updatedReturn, amount) }).catch(() => {});
+    sendEmail({ to: customer.email, ...emailTemplates.returnRefunded(updatedReturn, amount) })
+      .catch((err) => logger.error('Return-refunded email failed', { returnId: ret.id, rma: ret.rma_number, err: err.message }));
   }
 
   res.json(updatedReturn);
@@ -2148,9 +2162,11 @@ router.post(
           const email = order.email || order.shipping_address?.email;
           const phone = order.phone || order.shipping_address?.phone;
           const tpl = newStatus === 'shipped' ? await shippedTemplateFor(order) : emailTemplates[newStatus]?.(order);
-          if (email && tpl) sendEmail({ to: email, ...tpl }).catch(() => {});
+          if (email && tpl) sendEmail({ to: email, ...tpl })
+            .catch((err) => logger.error('Bulk order status-change email failed', { orderId: id, status: newStatus, err: err.message }));
           const smsTpl = smsTemplates[newStatus]?.(order);
-          if (phone && smsTpl) sendSMS(phone, smsTpl).catch(() => {});
+          if (phone && smsTpl) sendSMS(phone, smsTpl)
+            .catch((err) => logger.error('Bulk order status-change SMS failed', { orderId: id, status: newStatus, err: err.message }));
         }
         succeeded.push(id);
       } catch (err) { failed.push({ id, reason: err.message }); }
@@ -2180,12 +2196,14 @@ router.post(
           await query(`UPDATE returns SET status = 'approved', approved_at = NOW() WHERE id = $1`, [id]);
           const { rows: [u] } = await query('SELECT email FROM users WHERE id = $1', [ret.user_id]);
           const tpl = emailTemplates.returnApproved?.(ret);
-          if (u?.email && tpl) sendEmail({ to: u.email, ...tpl }).catch(() => {});
+          if (u?.email && tpl) sendEmail({ to: u.email, ...tpl })
+            .catch((err) => logger.error('Bulk return-approved email failed', { returnId: id, rma: ret.rma_number, err: err.message }));
         } else {
           await query(`UPDATE returns SET status = 'rejected', rejected_at = NOW(), admin_note = $1 WHERE id = $2`, [admin_note ?? null, id]);
           const { rows: [u] } = await query('SELECT email FROM users WHERE id = $1', [ret.user_id]);
           const tpl = emailTemplates.returnRejected?.(ret);
-          if (u?.email && tpl) sendEmail({ to: u.email, ...tpl }).catch(() => {});
+          if (u?.email && tpl) sendEmail({ to: u.email, ...tpl })
+            .catch((err) => logger.error('Bulk return-rejected email failed', { returnId: id, rma: ret.rma_number, err: err.message }));
         }
         succeeded.push(id);
       } catch (err) { failed.push({ id, reason: err.message }); }
@@ -2495,8 +2513,9 @@ router.post(
         wa_url = `https://wa.me/${e164}?text=${encodeURIComponent(renderedBody)}`;
         status = 'pending_manual';
       }
-    } catch {
+    } catch (err) {
       status = 'failed';
+      logger.error('Customer message send failed', { customerId: customer_id, channel, err: err.message });
     }
 
     await query(

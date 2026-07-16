@@ -13,6 +13,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { generateReferralCode } from '../utils/referral.js';
 import { logAdminAction } from '../utils/adminLog.js';
 import { verifyGoogleIdToken } from '../utils/googleAuth.js';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -53,7 +54,7 @@ async function logLoginEvent(userId, req, success, reason) {
     `INSERT INTO login_events (user_id, ip_address, user_agent, success, reason)
      VALUES ($1, $2, $3, $4, $5)`,
     [userId ?? null, ip, ua, success, reason]
-  ).catch(() => {});
+  ).catch((err) => logger.error('login_events insert failed', { userId, reason, err: err.message }));
 }
 
 async function createSession(userId, refreshToken, req) {
@@ -91,7 +92,7 @@ async function sendNewDeviceAlert(user, req) {
       ip: anonymizeIp(ip),
       time: new Date().toISOString(),
     }),
-  }).catch(() => {});
+  }).catch((err) => logger.error('New-device alert email failed', { userId: user.id, err: err.message }));
 }
 
 async function finishLogin(user, req, res) {
@@ -385,7 +386,7 @@ router.post('/google', authLimiter, asyncHandler(async (req, res) => {
           ip: anonymizeIp(ip),
           time: new Date().toISOString(),
         }),
-      }).catch(() => {});
+      }).catch((err) => logger.error('Google-link alert email failed', { userId: linked.id, err: err.message }));
       user = linked;
     } else {
       // New user — create account
@@ -446,7 +447,8 @@ router.post('/google/link', requireAuth, asyncHandler(async (req, res) => {
   let gPayload;
   try {
     gPayload = await verifyGoogleIdToken(id_token);
-  } catch {
+  } catch (err) {
+    logger.warn('Google account-link token verification failed', { userId: req.user.id, err: err.message });
     return res.status(401).json({ message: 'Google sign-in failed' });
   }
 
@@ -980,7 +982,8 @@ router.post('/me/delete-account', requireAuth, ...rejectViewAsWrites, asyncHandl
   });
 
   await logAdminAction(req.user.id, 'user.account_deleted', {}, ip);
-  sendEmail({ to: originalEmail, ...emailTemplates.accountDeleted(u.name) }).catch(() => {});
+  sendEmail({ to: originalEmail, ...emailTemplates.accountDeleted(u.name) })
+    .catch((err) => logger.error('Account-deleted email failed', { userId: req.user.id, err: err.message }));
 
   res.clearCookie('accessToken', COOKIE_OPTS).clearCookie('refreshToken', COOKIE_OPTS).json({ ok: true, message: 'Account deleted.' });
 }));
@@ -1046,7 +1049,8 @@ router.get('/unsubscribe/:token', asyncHandler(async (req, res) => {
   let payload;
   try {
     payload = jwt.verify(req.params.token, process.env.JWT_SECRET);
-  } catch {
+  } catch (err) {
+    logger.warn('Unsubscribe token invalid or expired', { err: err.message });
     return res.status(400).send(page('<p>This unsubscribe link is invalid or has expired.</p>'));
   }
   if (payload.type !== 'marketing_unsubscribe') {
