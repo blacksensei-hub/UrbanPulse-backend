@@ -24,8 +24,30 @@ function escapeHtml(str) {
   }[c]));
 }
 
+// Capitalizes each word (jeffrey -> Jeffrey, MARY -> Mary) — display only,
+// never mutates stored data. Used everywhere a name is shown in an email.
+function titleCase(str) {
+  return String(str ?? '')
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function firstName(name) {
-  return name?.split(' ')[0] ?? 'there';
+  const first = name?.split(' ')[0];
+  return first ? titleCase(first) : 'there';
+}
+
+// Ghana phone formatting — mirrors frontend/src/utils/format.js's formatPhone
+// exactly, so emails and the site never disagree on how a number reads.
+function formatPhoneGh(raw) {
+  if (!raw) return '';
+  let digits = String(raw).replace(/\D/g, '');
+  if (digits.startsWith('233')) digits = digits.slice(3);
+  else if (digits.startsWith('0')) digits = digits.slice(1);
+  if (digits.length !== 9) return raw;
+  return `+233 ${digits.slice(0, 2)} ${digits.slice(2, 5)} ${digits.slice(5)}`;
 }
 
 // Standard/Express windows mirror the copy already shown at checkout and on
@@ -214,16 +236,20 @@ export const emailTemplates = {
     // Store credit isn't a column — derived the same way receipt.js does.
     const credit = Math.max(0, +(subtotal + shipping + tax - discount - total).toFixed(2));
 
+    // Explicit HTML width= attributes (not just inline style) on every cell —
+    // Outlook's Word rendering engine and some Gmail mobile paths don't
+    // reliably size table cells from CSS width alone, which is what let the
+    // qty/price column collide against the product name at narrow widths.
     const itemRows = items.map((it) => `
       <tr>
-        <td style="padding:12px 0;border-bottom:1px solid ${COLOR.border};vertical-align:top;width:64px;">
+        <td width="64" style="padding:12px 0;border-bottom:1px solid ${COLOR.border};vertical-align:top;width:64px;">
           <img src="${it.product_image ?? ''}" width="64" alt="${escapeHtml(it.product_name)}" style="width:64px;height:auto;border-radius:6px;display:block;" />
         </td>
-        <td style="padding:12px 0 12px 12px;border-bottom:1px solid ${COLOR.border};vertical-align:top;font-size:14px;">
-          <strong style="color:${COLOR.text};">${escapeHtml(it.product_name)}</strong><br/>
-          <span style="color:${COLOR.muted};font-size:12px;">${escapeHtml(it.variant_description ?? '')}</span>
+        <td width="100%" style="padding:12px 0 12px 12px;border-bottom:1px solid ${COLOR.border};vertical-align:top;width:100%;">
+          <strong style="font-size:15px;font-weight:600;color:${COLOR.text};">${escapeHtml(it.product_name)}</strong><br/>
+          <span style="color:${COLOR.muted};font-size:13px;">${escapeHtml(it.variant_description ?? '')}</span>
         </td>
-        <td style="padding:12px 0;border-bottom:1px solid ${COLOR.border};vertical-align:top;white-space:nowrap;font-size:13px;color:${COLOR.muted};text-align:right;">${it.quantity} × ${formatGHS(it.unit_price)}</td>
+        <td style="padding:12px 0 12px 16px;border-bottom:1px solid ${COLOR.border};vertical-align:top;white-space:nowrap;font-size:14px;color:${COLOR.muted};text-align:right;">${it.quantity} × ${formatGHS(it.unit_price)}</td>
       </tr>`).join('');
 
     function totalsRow(label, value, { bold = false, hairline = false } = {}) {
@@ -242,14 +268,28 @@ export const emailTemplates = {
       ${totalsRow('Total', formatGHS(total), { bold: true, hairline: true })}
     </table>`;
 
-    const addrLines = [
-      address.name,
+    // Structured address block: name gets its own emphasized line, everything
+    // else is 14px muted — empty fields (line2 in particular) are skipped
+    // entirely rather than leaving a blank line.
+    const addressLine = `<p style="margin:0 0 4px;font-size:14px;color:${COLOR.muted};line-height:1.6;">`;
+    const cityRegion = [address.city, address.state].filter(Boolean).join(', ');
+    const addressBodyLines = [
       address.line1,
       address.line2,
-      [address.city, address.state].filter(Boolean).join(', '),
+      cityRegion,
       address.country,
-      address.phone,
-    ].filter(Boolean).map(escapeHtml).join('<br/>');
+      address.phone ? `Tel: ${formatPhoneGh(address.phone)}` : null,
+    ].filter(Boolean).map((line) => `${addressLine}${escapeHtml(line)}</p>`).join('');
+
+    const addressBlock = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:16px 0 20px;">
+      <tr>
+        <td style="background-color:${COLOR.bg};border:1px solid ${COLOR.border};border-radius:8px;padding:16px;">
+          <p style="margin:0 0 8px;font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:${COLOR.muted};">Shipping to</p>
+          ${address.name ? `<p style="margin:0 0 4px;font-size:15px;font-weight:500;color:${COLOR.text};">${escapeHtml(titleCase(address.name))}</p>` : ''}
+          ${addressBodyLines}
+        </td>
+      </tr>
+    </table>`;
 
     const deliveryLine = shippingLabel(shipping, expressRateGhs);
 
@@ -261,8 +301,7 @@ export const emailTemplates = {
         ${itemRows}
       </table>
       ${totalsHtml}
-      <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:${COLOR.text};">Shipping to</p>
-      <p style="margin:0 0 20px;font-size:13px;line-height:1.6;color:${COLOR.muted};">${addrLines}</p>
+      ${addressBlock}
       ${ctaButton('View your order', orderUrl)}
       <p style="margin:20px 0 0;font-size:13px;color:${COLOR.muted};">${deliveryLine}</p>
       <p style="margin:16px 0 0;font-size:13px;color:${COLOR.muted};">Questions? Reply to this email{{SUPPORT_WHATSAPP_HTML}}.</p>
@@ -411,10 +450,11 @@ export const emailTemplates = {
 
   // Admin-facing: fires to notify staff a customer has requested a return.
   returnRequested: (ret, customerName) => {
+    const name = titleCase(customerName);
     const bodyHtml = `
       ${eyebrow('New return request')}
       ${h1('A return has been requested.')}
-      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">${escapeHtml(customerName)} has requested a return.</p>
+      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">${escapeHtml(name)} has requested a return.</p>
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 16px;">
         <tr><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;color:${COLOR.muted};width:110px;">RMA</td><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;font-family:${MONO};color:${COLOR.text};">${escapeHtml(ret.rma_number)}</td></tr>
         <tr><td style="padding:6px 0;font-size:13px;color:${COLOR.muted};">Resolution</td><td style="padding:6px 0;font-size:13px;color:${COLOR.text};">${escapeHtml(ret.resolution)}</td></tr>
@@ -424,8 +464,8 @@ export const emailTemplates = {
     `;
     return {
       subject: `New return request — ${ret.rma_number}`,
-      html: renderLayout({ preheader: `New return request from ${customerName}`, bodyHtml }),
-      text: `New return request from ${customerName}.\nRMA: ${ret.rma_number}\nResolution: ${ret.resolution}${ret.customer_note ? `\nNote: ${ret.customer_note}` : ''}\n\nReview in admin console: ${frontendUrl()}/admin/returns${renderTextFooter()}`,
+      html: renderLayout({ preheader: `New return request from ${name}`, bodyHtml }),
+      text: `New return request from ${name}.\nRMA: ${ret.rma_number}\nResolution: ${ret.resolution}${ret.customer_note ? `\nNote: ${ret.customer_note}` : ''}\n\nReview in admin console: ${frontendUrl()}/admin/returns${renderTextFooter()}`,
     };
   },
 
@@ -496,14 +536,14 @@ export const emailTemplates = {
     const first = firstName(user?.name);
     const itemRows = items.map((it) => `
       <tr>
-        <td style="padding:12px 0;border-bottom:1px solid ${COLOR.border};vertical-align:top;width:64px;">
+        <td width="64" style="padding:12px 0;border-bottom:1px solid ${COLOR.border};vertical-align:top;width:64px;">
           <img src="${it.images?.[0] ?? ''}" width="64" alt="${escapeHtml(it.name)}" style="width:64px;height:auto;border-radius:6px;display:block;" />
         </td>
-        <td style="padding:12px 0 12px 12px;border-bottom:1px solid ${COLOR.border};vertical-align:top;font-size:14px;">
-          <strong style="color:${COLOR.text};">${escapeHtml(it.name)}</strong><br/>
-          <span style="color:${COLOR.muted};font-size:12px;">${escapeHtml([it.size, it.color].filter(Boolean).join(' · '))}</span>
+        <td width="100%" style="padding:12px 0 12px 12px;border-bottom:1px solid ${COLOR.border};vertical-align:top;width:100%;">
+          <strong style="font-size:15px;font-weight:600;color:${COLOR.text};">${escapeHtml(it.name)}</strong><br/>
+          <span style="color:${COLOR.muted};font-size:13px;">${escapeHtml([it.size, it.color].filter(Boolean).join(' · '))}</span>
         </td>
-        <td style="padding:12px 0;border-bottom:1px solid ${COLOR.border};vertical-align:top;white-space:nowrap;font-size:13px;color:${COLOR.muted};text-align:right;">${it.quantity} × ${formatGHS(it.price)}</td>
+        <td style="padding:12px 0 12px 16px;border-bottom:1px solid ${COLOR.border};vertical-align:top;white-space:nowrap;font-size:14px;color:${COLOR.muted};text-align:right;">${it.quantity} × ${formatGHS(it.price)}</td>
       </tr>`).join('');
     const couponLine = coupon
       ? `<p style="margin:16px 0 0;font-size:14px;">Use code <strong style="font-family:${MONO};">${escapeHtml(coupon)}</strong> at checkout for a little extra off.</p>`
