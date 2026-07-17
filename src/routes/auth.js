@@ -41,9 +41,22 @@ function getIp(req) {
   return req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || '0.0.0.0';
 }
 
+// Shared shape for recovery codes — the frontend can't import this directly
+// (separate app/bundler), so Login.jsx hardcodes matching values with a
+// comment pointing back here. Keep the two in sync if either changes.
+//
+// 32-character alphabet: uppercase letters + digits, excluding 0/O and 1/I —
+// visually confusable characters a stressed user reading a phone screen
+// shouldn't have to guess between.
+export const RECOVERY_CODE_LENGTH = 8;
+export const RECOVERY_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 function generateRecoveryCodes(n = 10) {
   return Array.from({ length: n }, () =>
-    crypto.randomBytes(5).toString('base64url').slice(0, 8).toUpperCase()
+    Array.from(
+      { length: RECOVERY_CODE_LENGTH },
+      () => RECOVERY_CODE_ALPHABET[crypto.randomInt(RECOVERY_CODE_ALPHABET.length)]
+    ).join('')
   );
 }
 
@@ -286,7 +299,18 @@ router.post('/login/verify-totp', authLimiter, asyncHandler(async (req, res) => 
 
   let reason = null;
 
-  if (verifySync({ token: code, secret: user.totp_secret, window: 1 })?.valid) {
+  // otplib's verifySync throws (rather than returning invalid) for a token
+  // that isn't 6 digits — which every recovery code always is, by design.
+  // Without this guard, any recovery-code attempt 500s here and never
+  // reaches the bcrypt comparison below.
+  let totpValid = false;
+  try {
+    totpValid = verifySync({ token: code, secret: user.totp_secret, window: 1 })?.valid ?? false;
+  } catch {
+    totpValid = false;
+  }
+
+  if (totpValid) {
     reason = 'totp_ok';
   } else {
     // Try recovery codes (bcrypt compare against each stored hash)
