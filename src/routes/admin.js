@@ -974,7 +974,7 @@ router.post('/orders/:id/mark-paid', asyncHandler(async (req, res) => {
     sendSMS({ to: phone, message: smsTemplates.delivered(updatedOrder) })
       .catch((err) => logger.error('COD mark-paid SMS failed', { orderId: updatedOrder.id, err: err.message }));
   }
-  checkAndQualifyReferral(updatedOrder.id, updatedOrder.user_id)
+  await checkAndQualifyReferral(updatedOrder.id, updatedOrder.user_id)
     .catch((err) => logger.error('Referral qualify check failed', { orderId: updatedOrder.id, err: err.message }));
   res.json(updatedOrder);
 }));
