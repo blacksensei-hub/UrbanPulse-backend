@@ -196,6 +196,31 @@ router.post(
       );
       const orderId = o.rows[0].id;
 
+      // Auto-save this shipping address to the customer's address book, deduped on
+      // name+line1+city+zip so re-using the same address across orders doesn't pile up
+      // duplicate rows. Guest checkouts (no req.user) have no address book to write to.
+      if (req.user && shipping_address?.line1) {
+        const { rows: existing } = await c.query(
+          `SELECT id FROM addresses
+            WHERE user_id = $1 AND lower(name) = lower($2) AND lower(line1) = lower($3)
+              AND lower(COALESCE(city,'')) = lower(COALESCE($4,''))
+              AND lower(COALESCE(zip,'')) = lower(COALESCE($5,''))
+            LIMIT 1`,
+          [req.user.id, shipping_address.name ?? '', shipping_address.line1,
+           shipping_address.city ?? null, shipping_address.zip ?? null]
+        );
+        if (!existing[0]) {
+          await c.query(
+            `INSERT INTO addresses (user_id, name, line1, line2, city, state, zip, country, phone)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [req.user.id, shipping_address.name ?? '', shipping_address.line1,
+             shipping_address.line2 ?? null, shipping_address.city ?? null,
+             shipping_address.state ?? null, shipping_address.zip ?? null,
+             shipping_address.country ?? 'Ghana', shipping_address.phone ?? null]
+          );
+        }
+      }
+
       for (const it of items.rows) {
         if (it.is_preorder) {
           // ── Pre-order: bypass stock; check preorder_limit with row-level lock ─
@@ -296,7 +321,22 @@ router.post(
 router.get('/user/me', requireAuth, viewAsMiddleware, asyncHandler(async (req, res) => {
   const userId = req.viewAs?.user_id ?? req.user.id;
   const { rows } = await query(
-    'SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC',
+    // eligible_for_return mirrors utils/returns.js's canReturnOrder — computed here so the
+    // Orders list can show/hide the Return button without a nonexistent orders.updated_at
+    // column (there is none; delivery time only exists in order_status_history).
+    `SELECT o.*,
+            (
+              o.payment_status = 'paid' AND o.status = 'delivered' AND
+              COALESCE(
+                (SELECT osh.created_at FROM order_status_history osh
+                  WHERE osh.order_id = o.id AND osh.status = 'delivered'
+                  ORDER BY osh.created_at DESC LIMIT 1),
+                o.created_at
+              ) >= NOW() - INTERVAL '30 days'
+            ) AS eligible_for_return
+       FROM orders o
+      WHERE o.user_id = $1
+      ORDER BY o.created_at DESC`,
     [userId]
   );
   res.json(rows);
@@ -371,7 +411,20 @@ router.get('/:id', optionalAuth, asyncHandler(async (req, res) => {
   if (req.user && order.user_id && order.user_id !== req.user.id && req.user.role !== 'admin') {
     throw notFound('Order');
   }
-  const items = await query('SELECT * FROM order_items WHERE order_id = $1', [order.id]);
+  // Joined through product_variants since order_items only stores variant_id — needed so the
+  // customer-facing "write a review" action on a delivered order (Account.jsx) knows which
+  // product/slug each line item is for and whether this user has already reviewed it.
+  const items = await query(
+    `SELECT oi.*, p.id AS product_id, p.slug AS product_slug,
+            EXISTS(
+              SELECT 1 FROM reviews r WHERE r.user_id = $2 AND r.product_id = p.id
+            ) AS already_reviewed
+       FROM order_items oi
+       LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+       LEFT JOIN products p ON p.id = pv.product_id
+      WHERE oi.order_id = $1`,
+    [order.id, req.user?.id ?? null]
+  );
 
   // No column on `orders` stores this — points are earned at payment confirmation (not order
   // creation), so both fields are 0 for an order that hasn't been paid yet, which is expected.
