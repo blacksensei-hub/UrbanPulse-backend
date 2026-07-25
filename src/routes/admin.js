@@ -163,7 +163,7 @@ router.get('/products', asyncHandler(async (req, res) => {
   const total = (await query(`SELECT COUNT(*)::int FROM products ${where}`, params)).rows[0].count;
   params.push(limit); params.push(offset);
   const { rows } = await query(
-    `SELECT id, slug, name, price, compare_at_price, category, images, rating, is_active, created_at,
+    `SELECT id, slug, name, price, compare_at_price, category, images, rating, is_active, is_featured, created_at,
             (SELECT COALESCE(SUM(stock),0) FROM product_variants WHERE product_id = products.id) AS total_stock
      FROM products ${where} ORDER BY created_at DESC LIMIT $${params.length-1} OFFSET $${params.length}`,
     params
@@ -194,11 +194,12 @@ router.post(
     const { rows } = await query(
       `INSERT INTO products
          (slug,name,description,price,compare_at_price,images,category,tags,is_active,
-          is_preorder,preorder_ships_at,preorder_limit)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+          is_preorder,preorder_ships_at,preorder_limit,is_featured)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [slug, p.name, p.description ?? '', p.price, p.compare_at_price ?? null,
        p.images ?? [], p.category ?? null, p.tags ?? [], p.is_active ?? true,
-       p.is_preorder ?? false, p.preorder_ships_at ?? null, p.preorder_limit ?? null]
+       p.is_preorder ?? false, p.preorder_ships_at ?? null, p.preorder_limit ?? null,
+       p.is_featured ?? false]
     );
     const product = rows[0];
     if (Array.isArray(p.variants) && p.variants.length) {
@@ -233,11 +234,13 @@ router.put('/products/:id', asyncHandler(async (req, res) => {
       is_preorder = COALESCE($10,is_preorder),
       preorder_ships_at = $11,
       preorder_limit = $12,
+      is_featured = COALESCE($13,is_featured),
       updated_at = NOW()
-     WHERE id = $13 RETURNING *`,
+     WHERE id = $14 RETURNING *`,
     [p.name ?? null, p.description ?? null, p.price ?? null, p.compare_at_price ?? null,
      p.images ?? null, p.category ?? null, p.tags ?? null, p.is_active ?? null, p.slug ?? null,
-     p.is_preorder ?? null, p.preorder_ships_at ?? null, p.preorder_limit ?? null, req.params.id]
+     p.is_preorder ?? null, p.preorder_ships_at ?? null, p.preorder_limit ?? null,
+     p.is_featured ?? null, req.params.id]
   );
   if (!rows[0]) throw notFound();
   // Replace variants if provided
