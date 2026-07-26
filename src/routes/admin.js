@@ -14,7 +14,6 @@ import { sendSMS, smsTemplates } from '../utils/sms.js';
 import { refundTransaction } from '../utils/paystackHelper.js';
 import { checkAndQualifyReferral } from '../utils/referral.js';
 import { canReturnOrder } from '../utils/returns.js';
-import { buildRMANumber } from '../utils/helpers.js';
 import { renderTemplate } from '../utils/templateRenderer.js';
 import crypto from 'crypto';
 import { getSettings, invalidateSettings } from '../utils/settingsCache.js';

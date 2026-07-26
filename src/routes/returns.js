@@ -63,20 +63,21 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       );
   }
 
-  // Create return + items atomically
+  // Create return + items atomically. The RMA number needs the row's own auto-increment
+  // id (race-safe — see buildRMANumber), so the id is reserved from its sequence up front
+  // rather than inserting without it and updating afterward; sequence values are never
+  // rolled back or reused, so this is just as race-safe as the original insert-then-update
+  // shape, but lets rma_number be supplied on the initial INSERT.
   const returnRecord = await tx(async (c) => {
-    const { rows: [ret] } = await c.query(
-      `INSERT INTO returns (order_id, user_id, status, resolution, customer_note)
-       VALUES ($1, $2, 'requested', $3, $4)
-       RETURNING *`,
-      [order_id, req.user.id, resolution, customer_note ?? null]
+    const { rows: [{ id: returnId }] } = await c.query(
+      `SELECT nextval(pg_get_serial_sequence('returns', 'id')) AS id`
     );
-
-    // Set RMA number using the auto-increment id (race-safe)
-    const rma = buildRMANumber(ret.id);
-    const { rows: [updated] } = await c.query(
-      'UPDATE returns SET rma_number = $1 WHERE id = $2 RETURNING *',
-      [rma, ret.id]
+    const rma = buildRMANumber(returnId);
+    const { rows: [ret] } = await c.query(
+      `INSERT INTO returns (id, order_id, user_id, status, resolution, customer_note, rma_number)
+       VALUES ($1, $2, $3, 'requested', $4, $5, $6)
+       RETURNING *`,
+      [returnId, order_id, req.user.id, resolution, customer_note ?? null, rma]
     );
 
     for (const item of items) {
@@ -84,11 +85,11 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       await c.query(
         `INSERT INTO return_items (return_id, order_item_id, variant_id, quantity, reason_code)
          VALUES ($1, $2, $3, $4, $5)`,
-        [updated.id, item.order_item_id, oi.variant_id ?? null, item.quantity, item.reason_code ?? null]
+        [ret.id, item.order_item_id, oi.variant_id ?? null, item.quantity, item.reason_code ?? null]
       );
     }
 
-    return updated;
+    return ret;
   });
 
   // Notify admin (non-blocking)

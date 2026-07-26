@@ -6,6 +6,7 @@ import { optionalAuth, requireAuth, viewAsMiddleware, rejectViewAsWrites } from 
 import { generateReceiptPDF } from '../utils/receipt.js';
 import { getSettings } from '../utils/settingsCache.js';
 import { redeemPoints } from '../utils/loyalty.js';
+import { logger } from '../utils/logger.js';
 
 async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId }) {
   const cp = await queryFn.query(
@@ -199,25 +200,38 @@ router.post(
       // Auto-save this shipping address to the customer's address book, deduped on
       // name+line1+city+zip so re-using the same address across orders doesn't pile up
       // duplicate rows. Guest checkouts (no req.user) have no address book to write to.
+      // This is a side effect of order creation, not part of it — wrapped in its own
+      // SAVEPOINT so a failure here (e.g. the addresses table missing) can be rolled back
+      // in isolation and logged without poisoning the surrounding order transaction. A
+      // plain try/catch would NOT be enough: once a statement inside a Postgres transaction
+      // errors, every later statement on that same connection fails too ("current
+      // transaction is aborted") until a ROLLBACK — a SAVEPOINT is the only way to recover
+      // and let order creation continue normally after this fails.
       if (req.user && shipping_address?.line1) {
-        const { rows: existing } = await c.query(
-          `SELECT id FROM addresses
-            WHERE user_id = $1 AND lower(name) = lower($2) AND lower(line1) = lower($3)
-              AND lower(COALESCE(city,'')) = lower(COALESCE($4,''))
-              AND lower(COALESCE(zip,'')) = lower(COALESCE($5,''))
-            LIMIT 1`,
-          [req.user.id, shipping_address.name ?? '', shipping_address.line1,
-           shipping_address.city ?? null, shipping_address.zip ?? null]
-        );
-        if (!existing[0]) {
-          await c.query(
-            `INSERT INTO addresses (user_id, name, line1, line2, city, state, zip, country, phone)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        await c.query('SAVEPOINT address_save');
+        try {
+          const { rows: existing } = await c.query(
+            `SELECT id FROM addresses
+              WHERE user_id = $1 AND lower(name) = lower($2) AND lower(line1) = lower($3)
+                AND lower(COALESCE(city,'')) = lower(COALESCE($4,''))
+                AND lower(COALESCE(zip,'')) = lower(COALESCE($5,''))
+              LIMIT 1`,
             [req.user.id, shipping_address.name ?? '', shipping_address.line1,
-             shipping_address.line2 ?? null, shipping_address.city ?? null,
-             shipping_address.state ?? null, shipping_address.zip ?? null,
-             shipping_address.country ?? 'Ghana', shipping_address.phone ?? null]
+             shipping_address.city ?? null, shipping_address.zip ?? null]
           );
+          if (!existing[0]) {
+            await c.query(
+              `INSERT INTO addresses (user_id, name, line1, line2, city, state, zip, country, phone)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+              [req.user.id, shipping_address.name ?? '', shipping_address.line1,
+               shipping_address.line2 ?? null, shipping_address.city ?? null,
+               shipping_address.state ?? null, shipping_address.zip ?? null,
+               shipping_address.country ?? 'Ghana', shipping_address.phone ?? null]
+            );
+          }
+        } catch (err) {
+          await c.query('ROLLBACK TO SAVEPOINT address_save');
+          logger.error('Address-book save failed (order still proceeds)', { userId: req.user.id, err: err.message });
         }
       }
 
