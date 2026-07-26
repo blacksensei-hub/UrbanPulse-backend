@@ -1271,13 +1271,17 @@ router.get('/returns/:id', asyncHandler(async (req, res) => {
   );
   if (!ret) throw notFound('Return');
 
-  const { rows: items } = await query(
+  const { rows: rawItems } = await query(
     `SELECT ri.*, oi.product_name, oi.unit_price, oi.variant_description, oi.product_image
      FROM return_items ri
      JOIN order_items oi ON oi.id = ri.order_item_id
      WHERE ri.return_id = $1`,
     [ret.id]
   );
+
+  // reason_code lives on the parent return, not per item — attach it to each item here
+  // so AdminReturns.jsx's existing per-item display keeps working unchanged.
+  const items = rawItems.map((item) => ({ ...item, reason_code: ret.reason_code }));
 
   res.json({ ...ret, items });
 }));

@@ -73,19 +73,23 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       `SELECT nextval(pg_get_serial_sequence('returns', 'id')) AS id`
     );
     const rma = buildRMANumber(returnId);
+    // reason_code lives on `returns` (one reason per request), not `return_items` — the
+    // request UI captures a reason per selected item, but the schema only holds one value
+    // per return, so the first item's reason is what's actually persisted.
+    const reasonCode = items[0]?.reason_code ?? null;
     const { rows: [ret] } = await c.query(
-      `INSERT INTO returns (id, order_id, user_id, status, resolution, customer_note, rma_number)
-       VALUES ($1, $2, $3, 'requested', $4, $5, $6)
+      `INSERT INTO returns (id, order_id, user_id, status, resolution, customer_note, rma_number, reason_code)
+       VALUES ($1, $2, $3, 'requested', $4, $5, $6, $7)
        RETURNING *`,
-      [returnId, order_id, req.user.id, resolution, customer_note ?? null, rma]
+      [returnId, order_id, req.user.id, resolution, customer_note ?? null, rma, reasonCode]
     );
 
     for (const item of items) {
       const oi = orderItemMap[item.order_item_id];
       await c.query(
-        `INSERT INTO return_items (return_id, order_item_id, variant_id, quantity, reason_code)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [ret.id, item.order_item_id, oi.variant_id ?? null, item.quantity, item.reason_code ?? null]
+        `INSERT INTO return_items (return_id, order_item_id, variant_id, quantity)
+         VALUES ($1, $2, $3, $4)`,
+        [ret.id, item.order_item_id, oi.variant_id ?? null, item.quantity]
       );
     }
 
@@ -134,7 +138,11 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
     [ret.id]
   );
 
-  res.json({ ...ret, items: returnItems });
+  // reason_code lives on the parent return, not per item — attach it to each item here
+  // so the existing per-item display in Account.jsx keeps working unchanged.
+  const items = returnItems.map((item) => ({ ...item, reason_code: ret.reason_code }));
+
+  res.json({ ...ret, items });
 }));
 
 export default router;

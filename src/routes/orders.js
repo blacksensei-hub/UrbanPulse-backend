@@ -198,7 +198,7 @@ router.post(
       const orderId = o.rows[0].id;
 
       // Auto-save this shipping address to the customer's address book, deduped on
-      // name+line1+city+zip so re-using the same address across orders doesn't pile up
+      // line1+city+phone so re-using the same address across orders doesn't pile up
       // duplicate rows. Guest checkouts (no req.user) have no address book to write to.
       // This is a side effect of order creation, not part of it — wrapped in its own
       // SAVEPOINT so a failure here (e.g. the addresses table missing) can be rolled back
@@ -212,21 +212,25 @@ router.post(
         try {
           const { rows: existing } = await c.query(
             `SELECT id FROM addresses
-              WHERE user_id = $1 AND lower(name) = lower($2) AND lower(line1) = lower($3)
-                AND lower(COALESCE(city,'')) = lower(COALESCE($4,''))
-                AND lower(COALESCE(zip,'')) = lower(COALESCE($5,''))
+              WHERE user_id = $1 AND lower(line1) = lower($2)
+                AND lower(COALESCE(city,'')) = lower(COALESCE($3,''))
+                AND lower(COALESCE(phone,'')) = lower(COALESCE($4,''))
               LIMIT 1`,
-            [req.user.id, shipping_address.name ?? '', shipping_address.line1,
-             shipping_address.city ?? null, shipping_address.zip ?? null]
+            [req.user.id, shipping_address.line1,
+             shipping_address.city ?? null, shipping_address.phone ?? null]
           );
           if (!existing[0]) {
+            const { rows: [{ count }] } = await c.query(
+              'SELECT COUNT(*)::int AS count FROM addresses WHERE user_id = $1',
+              [req.user.id]
+            );
             await c.query(
-              `INSERT INTO addresses (user_id, name, line1, line2, city, state, zip, country, phone)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-              [req.user.id, shipping_address.name ?? '', shipping_address.line1,
+              `INSERT INTO addresses (user_id, label, name, line1, line2, city, state, zip, country, phone, is_default)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+              [req.user.id, shipping_address.label ?? 'Home', shipping_address.name ?? '', shipping_address.line1,
                shipping_address.line2 ?? null, shipping_address.city ?? null,
                shipping_address.state ?? null, shipping_address.zip ?? null,
-               shipping_address.country ?? 'Ghana', shipping_address.phone ?? null]
+               shipping_address.country ?? 'Ghana', shipping_address.phone ?? null, count === 0]
             );
           }
         } catch (err) {
