@@ -37,6 +37,13 @@ if (process.env.SENTRY_DSN) {
 const app = express();
 
 app.set('trust proxy', 1);
+// Disable Express's default weak-ETag generation app-wide. Without this, any GET
+// response (not just admin's) can be conditionally-revalidated by the browser and
+// answered with an empty-bodied 304 — proven live via curl — which axios's default
+// validateStatus (2xx only) treats as a failed request rather than data, on whatever
+// route happens to be hit next. This server only ever serves the API (the frontend
+// build is hosted separately), so there's no static-asset caching benefit to lose.
+app.set('etag', false);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(compression());
 app.use(morgan('tiny'));
@@ -53,6 +60,10 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoute
 
 app.use(express.json({ limit: '1mb' }));
 app.use(generalLimiter);
+
+// Defense in depth alongside `app.set('etag', false)` above — guards against any
+// downstream proxy/CDN that might otherwise cache a GET regardless of ETag.
+app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 

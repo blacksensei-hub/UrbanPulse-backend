@@ -29,11 +29,6 @@ const upload = multer({
 
 const router = express.Router();
 router.use(adminLimiter, requireAuth, requireAdmin);
-// Admin dashboards must always see fresh data — Express's default weak-ETag
-// generation otherwise lets the browser conditionally-revalidate these GETs and
-// receive a real, empty-bodied 304, which the client's axios instance (default
-// validateStatus only accepts 2xx) treats as a failed request rather than data.
-router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
 const jobLastRun = new Map();
 function checkJobCooldown(jobId) {
