@@ -2450,6 +2450,40 @@ router.delete('/message-templates/:id', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ───────── Content Pages ─────────
+
+router.get('/content', asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    `SELECT cp.*, u.name AS updated_by_name
+     FROM content_pages cp
+     LEFT JOIN users u ON u.id = cp.updated_by
+     ORDER BY cp.title`
+  );
+  res.json({ pages: rows });
+}));
+
+router.put('/content/:slug', asyncHandler(async (req, res) => {
+  const { slug } = req.params;
+  const { title, body: pageBody, meta_description, is_published } = req.body;
+  const sets = [];
+  const params = [];
+  if (title !== undefined)            { params.push(title);            sets.push(`title=$${params.length}`); }
+  if (pageBody !== undefined)         { params.push(pageBody);         sets.push(`body=$${params.length}`); }
+  if (meta_description !== undefined) { params.push(meta_description); sets.push(`meta_description=$${params.length}`); }
+  if (is_published !== undefined)     { params.push(is_published);     sets.push(`is_published=$${params.length}`); }
+  if (!sets.length) throw badRequest('Nothing to update');
+  params.push(req.user.id); sets.push(`updated_by=$${params.length}`);
+  sets.push('updated_at = NOW()');
+  params.push(slug);
+  const { rows: [row] } = await query(
+    `UPDATE content_pages SET ${sets.join(',')} WHERE slug=$${params.length} RETURNING *`,
+    params
+  );
+  if (!row) throw notFound('Page not found');
+  await logAdminAction(req.user.id, 'content.update', { id: row.id, slug }, req.ip);
+  res.json({ page: row });
+}));
+
 // ───────── Send Message ─────────
 
 router.post(

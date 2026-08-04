@@ -14,6 +14,7 @@ import { query } from './db/index.js';
 
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
+import contentRoutes from './routes/content.js';
 import cartRoutes from './routes/cart.js';
 import orderRoutes from './routes/orders.js';
 import checkoutRoutes from './routes/checkout.js';
@@ -136,6 +137,7 @@ app.get('/sitemap.xml', async (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/content', contentRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/checkout', checkoutRoutes);
