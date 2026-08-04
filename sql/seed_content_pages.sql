@@ -77,7 +77,7 @@ You can return any unworn, unwashed item within 30 days of delivery for a full r
 Each product page has a size guide tailored to that piece. Our tees run boxy and true to size; outerwear is designed with room for layering.
 
 ## Do you ship internationally?
-Yes. We currently ship to 48 countries. International shipping rates and timing are calculated at checkout based on your destination.
+Not yet — we currently ship within Ghana only. International shipping is planned; sign up to our newsletter to hear when it launches.
 
 ## How do I track my order?
 Once your order ships you'll get a tracking email. You can also view tracking info in your account under Orders.
