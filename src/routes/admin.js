@@ -2542,10 +2542,12 @@ router.post(
 
     let status = 'sent';
     let wa_url = null;
+    let errorMsg = null;
 
     try {
       if (channel === 'email') {
-        await sendEmail({ to: recipient, subject: renderedSubject, html: renderedBody, text: renderedBody });
+        const { html, text } = emailTemplates.customMessage(renderedBody);
+        await sendEmail({ to: recipient, subject: renderedSubject, html, text });
       } else if (channel === 'sms') {
         await sendSMS({ to: recipient, message: renderedBody });
       } else {
@@ -2555,19 +2557,23 @@ router.post(
       }
     } catch (err) {
       status = 'failed';
+      errorMsg = err.message;
       logger.error('Customer message send failed', { customerId: customer_id, channel, err: err.message });
     }
 
     await query(
       `INSERT INTO outbound_messages
-         (customer_id, admin_id, channel, template_id, subject, body, recipient, order_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (customer_id, admin_id, channel, template_id, subject, body, recipient, order_id, status, error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [customer_id, req.user.id, channel, template_id ?? null, renderedSubject || null,
-       renderedBody, recipient, order_id ?? null, status]
+       renderedBody, recipient, order_id ?? null, status, errorMsg]
     );
 
     await logAdminAction(req.user.id, 'message.send', { customer_id, channel, status }, req.ip);
-    res.json({ ok: true, ...(wa_url ? { wa_url } : {}) });
+    // `status` reflects the true outcome even though this request itself succeeded
+    // (the attempt was made and recorded) — the frontend must check `status`/`error`
+    // rather than assume ok:true means delivered, so a failed send is never silent.
+    res.json({ ok: status !== 'failed', status, ...(errorMsg ? { error: errorMsg } : {}), ...(wa_url ? { wa_url } : {}) });
   })
 );
 
@@ -2696,7 +2702,9 @@ router.post('/customers/:id/reset-password', asyncHandler(async (req, res) => {
 // ───────── Settings ─────────
 router.get('/settings', asyncHandler(async (_req, res) => {
   const settings = await getSettings();
-  res.json(settings);
+  // sms_configured is a runtime capability check (env var presence), not a stored
+  // setting — computed fresh into a new object so it never pollutes the shared cache.
+  res.json({ ...settings, sms_configured: !!process.env.SMS_API_KEY });
 }));
 
 router.put('/settings', asyncHandler(async (req, res) => {

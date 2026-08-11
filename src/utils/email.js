@@ -24,6 +24,36 @@ function escapeHtml(str) {
   }[c]));
 }
 
+// ─── Minimal markdown for admin-composed messages ───────────────────────────
+// No markdown library exists server-side (react-markdown/remark-gfm from the
+// CMS work are React-only, frontend-only) — this only needs to cover
+// **bold**, *italic*, [text](url), and blank-line paragraphs, so a handful of
+// regexes is enough rather than pulling in a parser.
+function markdownToHtml(raw) {
+  const escaped = escapeHtml(raw);
+  const inline = escaped
+    // Restricted to http(s)/mailto so a stray `[x](javascript:...)` can't
+    // become a live link — same defensive posture as escaping everything else.
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+      `<a href="$2" style="color:${COLOR.accent};text-decoration:underline;">$1</a>`)
+    .replace(/\*\*(.+?)\*\*/g, `<strong style="font-weight:600;color:${COLOR.text};">$1</strong>`)
+    .replace(/\*(.+?)\*/g, '<em>$1</em>');
+  return inline
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;">${p.replace(/\n/g, '<br/>')}</p>`)
+    .join('');
+}
+
+function markdownToText(raw) {
+  return String(raw ?? '')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '$1 ($2)')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .trim();
+}
+
 // Capitalizes each word (jeffrey -> Jeffrey, MARY -> Mary) — display only,
 // never mutates stored data. Used everywhere a name is shown in an email.
 function titleCase(str) {
@@ -567,6 +597,20 @@ export const emailTemplates = {
       subject: `${first}, you left something behind`,
       html: renderLayout({ preheader: 'A few things are still waiting in your bag', bodyHtml, transactional: false }),
       text: `Hi ${first}.\n\nYou left a few things in your bag.\n\n${items.map((it) => `${it.name} × ${it.quantity}`).join('\n')}${couponText}\n\nReturn to your bag: ${cartUrl}${renderTextFooter({ transactional: false })}`,
+    };
+  },
+
+  // Free-form message an admin sends from a customer's detail page — the only
+  // template whose body content isn't authored here, just wrapped. No
+  // synthesized headline (no h1()): the admin's own text is the content area,
+  // in the same slot order details normally occupy. No `subject` in the
+  // return value — the caller already owns and passes the admin's subject
+  // verbatim, unprefixed.
+  customMessage: (rawBody) => {
+    const bodyHtml = `${eyebrow('Message from UrbanPulse')}${markdownToHtml(rawBody)}`;
+    return {
+      html: renderLayout({ preheader: markdownToText(rawBody).slice(0, 140), bodyHtml }),
+      text: `${markdownToText(rawBody)}${renderTextFooter()}`,
     };
   },
 };
