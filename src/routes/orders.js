@@ -132,12 +132,15 @@ router.post(
       const shipping = shipping_method === 'express' ? expRate : (subtotal >= freeThresh ? 0 : stdRate);
       const tax = +(subtotal * taxRate).toFixed(2);
 
-      if (payment_method === 'cod' && cfg.feature_cod === 'false') {
-        throw badRequest('Cash on delivery is currently unavailable');
+      // site_settings.value is jsonb — a stored false round-trips as a native
+      // boolean, not the string 'false', so both forms must be checked (see
+      // the feature_loyalty check below, and requireFeature() in settingsCache.js).
+      if (payment_method === 'cod' && (cfg.feature_cod === 'false' || cfg.feature_cod === false)) {
+        return res.status(503).json({ error: 'This feature is currently disabled' });
       }
       const hasPreorder = items.rows.some(it => it.is_preorder);
-      if (hasPreorder && cfg.feature_preorders === 'false') {
-        throw badRequest('Pre-orders are currently unavailable');
+      if (hasPreorder && (cfg.feature_preorders === 'false' || cfg.feature_preorders === false)) {
+        return res.status(503).json({ error: 'This feature is currently disabled' });
       }
 
       let discount = 0;

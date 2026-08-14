@@ -4,7 +4,7 @@ import { query, tx } from '../db/index.js';
 import { asyncHandler, badRequest, notFound } from '../utils/helpers.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { initializeTransaction, verifyTransaction } from '../utils/paystackHelper.js';
-import { getSettings } from '../utils/settingsCache.js';
+import { requireFeature } from '../utils/settingsCache.js';
 import { awardPointsForOrder } from '../utils/loyalty.js';
 
 const router = express.Router();
@@ -26,6 +26,7 @@ async function resolveCartId(req) {
 router.post(
   '/session',
   optionalAuth,
+  requireFeature('feature_paystack'),
   body('order_id').isInt(),
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
@@ -37,9 +38,6 @@ router.post(
     if (!order) throw notFound('Order');
     if (order.payment_method === 'cod') throw badRequest('COD orders do not need a Paystack session');
     if (order.payment_status === 'paid') throw badRequest('Already paid');
-
-    const cfg = await getSettings();
-    if (cfg.feature_paystack === 'false') throw badRequest('Online payments are currently unavailable');
 
     // First init uses the order_number as the Paystack reference (easy manual
     // correlation). Retries after a prior successful init need a fresh suffixed
