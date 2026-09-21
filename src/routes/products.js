@@ -15,7 +15,11 @@ router.get('/', asyncHandler(async (req, res) => {
 
   const where = ['is_active = TRUE'];
   const params = [];
-  if (category) { params.push(category); where.push(`category = $${params.length}`); }
+  // The filter UI sends title case ('Bottoms'); the column stores lower
+  // case ('bottoms'). A case-sensitive compare hid every product from its
+  // own category. Compare case-insensitively until the column is
+  // normalised on write.
+  if (category) { params.push(category); where.push(`LOWER(category) = LOWER($${params.length})`); }
   if (minPrice) { params.push(Number(minPrice)); where.push(`price >= $${params.length}`); }
   if (maxPrice) { params.push(Number(maxPrice)); where.push(`price <= $${params.length}`); }
   if (size) {
@@ -180,7 +184,7 @@ router.get('/:slug/related', asyncHandler(async (req, res) => {
                   WHERE pv.product_id = products.id AND pv.color IS NOT NULL
                   ORDER BY pv.color) AS colors
      FROM products
-     WHERE is_active = TRUE AND id != $1 AND category = $2
+     WHERE is_active = TRUE AND id != $1 AND LOWER(category) = LOWER($2)
      ORDER BY rating DESC
      LIMIT 8`,
     [product.id, product.category]
