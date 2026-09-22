@@ -21,6 +21,7 @@ import { runAbandonedCartJob } from '../jobs/abandonedCart.js';
 import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
 import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
 import { logger } from '../utils/logger.js';
+import { normalizeCategory } from '../utils/category.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -196,7 +197,7 @@ router.post(
           is_preorder,preorder_ships_at,preorder_limit,is_featured)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [slug, p.name, p.description ?? '', p.price, p.compare_at_price ?? null,
-       p.images ?? [], p.category ?? null, p.tags ?? [], p.is_active ?? true,
+       p.images ?? [], normalizeCategory(p.category), p.tags ?? [], p.is_active ?? true,
        p.is_preorder ?? false, p.preorder_ships_at ?? null, p.preorder_limit ?? null,
        p.is_featured ?? false]
     );
@@ -237,7 +238,7 @@ router.put('/products/:id', asyncHandler(async (req, res) => {
       updated_at = NOW()
      WHERE id = $14 RETURNING *`,
     [p.name ?? null, p.description ?? null, p.price ?? null, p.compare_at_price ?? null,
-     p.images ?? null, p.category ?? null, p.tags ?? null, p.is_active ?? null, p.slug ?? null,
+     p.images ?? null, normalizeCategory(p.category), p.tags ?? null, p.is_active ?? null, p.slug ?? null,
      p.is_preorder ?? null, p.preorder_ships_at ?? null, p.preorder_limit ?? null,
      p.is_featured ?? null, req.params.id]
   );
@@ -338,7 +339,7 @@ router.post('/products/import', upload.single('file'), asyncHandler(async (req, 
            category   = EXCLUDED.category,
            updated_at = NOW()
          RETURNING id, (xmax = 0) AS inserted`,
-        [slug, meta.name || slug, parseFloat(meta.price) || 0, meta.category || null]
+        [slug, meta.name || slug, parseFloat(meta.price) || 0, normalizeCategory(meta.category)]
       );
       const productId = rows[0].id;
       rows[0].inserted ? created++ : updated++;
@@ -2250,7 +2251,7 @@ router.post(
         } else if (action === 'deactivate') {
           await query('UPDATE products SET is_active = false WHERE id = $1', [id]);
         } else if (action === 'set_category') {
-          await query('UPDATE products SET category = $1 WHERE id = $2', [category, id]);
+          await query('UPDATE products SET category = $1 WHERE id = $2', [normalizeCategory(category), id]);
         }
         succeeded.push(id);
       } catch (err) { failed.push({ id, reason: err.message }); }
