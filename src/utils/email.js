@@ -210,7 +210,7 @@ export async function sendEmail({ to, subject, html, text }) {
     logger.error('sendEmail: getSettings failed, falling back to default contact info', { err: err.message });
     return {};
   });
-  const supportEmail = settings.support_email || 'support@urbanpulse.com.gh';
+  const supportEmail = settings.support_email || 'noreply.urbanpulse0@gmail.com';
   const waDigits = (settings.support_whatsapp || '').replace(/\D/g, '');
   const tokens = {
     supportEmailHtml: `<a href="mailto:${supportEmail}" style="color:${COLOR.muted};text-decoration:underline;">${supportEmail}</a>`,

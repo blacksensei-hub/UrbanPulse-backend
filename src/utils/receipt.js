@@ -1,5 +1,5 @@
-// TODO: Replace with real business details once registered.
 import PDFDocument from 'pdfkit';
+import { getSettings } from './settingsCache.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -7,11 +7,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FONT_REGULAR = path.join(__dirname, '../assets/fonts/DejaVuSans.ttf');
 const FONT_BOLD = path.join(__dirname, '../assets/fonts/DejaVuSans-Bold.ttf');
 
-const BUSINESS = {
-  name:    'UrbanPulse Ltd',
+// Not "UrbanPulse Ltd": nothing confirms the business is registered as a
+// limited company, and a receipt is the wrong place to guess. Email and
+// address come from Admin → Settings at generation time.
+const BUSINESS_DEFAULTS = {
+  name:    'UrbanPulse',
   address: 'Accra, Ghana',
-  email:   'support@urbanpulse.com.gh',
-  website: 'urbanpulse.com.gh',
+  email:   'noreply.urbanpulse0@gmail.com',
 };
 
 const ACCENT = '#D85A30';
@@ -34,6 +36,13 @@ function formatGHS(amount) {
  * @returns {Promise<Buffer>}
  */
 export async function generateReceiptPDF(order, items, user, { couponDiscount = 0 } = {}) {
+  let settings = {};
+  try { settings = await getSettings(); } catch { /* fall back to defaults */ }
+  const BUSINESS = {
+    name:    settings.store_name       || BUSINESS_DEFAULTS.name,
+    address: settings.business_address || BUSINESS_DEFAULTS.address,
+    email:   settings.support_email    || BUSINESS_DEFAULTS.email,
+  };
   return new Promise((resolve, reject) => {
     const doc    = new PDFDocument({ size: 'A4', margin: 50 });
     const chunks = [];

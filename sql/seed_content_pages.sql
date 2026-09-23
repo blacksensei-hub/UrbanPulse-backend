@@ -61,7 +61,7 @@ $about$,
   'faq',
   'FAQ',
   $faq$
-Can't find what you're looking for? Email [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh).
+Can't find what you're looking for? Email [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com).
 
 ## Where do you deliver?
 Anywhere in Ghana. We don't ship internationally yet.
@@ -111,7 +111,7 @@ The following items cannot be returned under any circumstances:
 
 ## 3. How to request a return
 Returns are initiated through your account — there is no need to contact support first for standard returns:
-1. Log in to your account at urbanpulse.com.gh
+1. Log in to your account on this website
 2. Go to **Orders** and find the relevant delivered order
 3. Click **Request return**
 4. Select the items you wish to return, the reason, and your preferred resolution (refund or exchange)
@@ -142,7 +142,7 @@ If you received a defective item or we sent you the wrong item, please contact o
 - Your return will be prioritised
 - You may request a full refund, exchange, or store credit
 
-Contact: [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh) or via our [contact page](/contact).
+Contact: [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com) or via our [contact page](/contact).
 
 ## 8. Refund timing
 Paystack refunds to the original card or mobile money account typically appear within 5–10 business days after we initiate them, depending on your bank or mobile money provider.
@@ -150,7 +150,7 @@ Paystack refunds to the original card or mobile money account typically appear w
 Store credit is added to your account balance instantly once the return is approved.
 
 ## 9. Order cancellations
-Orders can be cancelled before they are dispatched. Contact us as soon as possible at [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh) or via [our contact page](/contact). Once an order has been dispatched, it cannot be cancelled — please use the returns process instead.
+Orders can be cancelled before they are dispatched. Contact us as soon as possible at [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com) or via [our contact page](/contact). Once an order has been dispatched, it cannot be cancelled — please use the returns process instead.
 $returns$,
   $md$How to return an UrbanPulse order, what's eligible, and how refunds are processed.$md$,
   true,
@@ -205,7 +205,7 @@ Under the Data Protection Act, 2012 (Act 843), you have the following rights reg
 - **Objection** — object to processing of your data for marketing purposes at any time
 - **Complaint** — lodge a complaint with Ghana's [Data Protection Commission](https://dataprotection.org.gh)
 
-To exercise any of these rights, contact us at [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh). We will respond within 30 days.
+To exercise any of these rights, contact us at [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com). We will respond within 30 days.
 
 ## 7. Data retention
 We retain order records for 7 years to comply with Ghanaian tax and commercial law. If you request deletion of your account, we will delete or anonymise all personal data not subject to legal retention obligations within 30 days.
@@ -231,7 +231,7 @@ Paystack and our email and SMS service providers may process your data on server
 If we make material changes to this policy, we will notify registered users by email at least 14 days before the changes take effect. We will also update the "Last updated" date at the top of this page. Continued use of the service after changes take effect constitutes acceptance of the revised policy.
 
 ## 12. Contact
-Questions about this policy or your personal data? Reach us at [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh) or through our [contact page](/contact).
+Questions about this policy or your personal data? Reach us at [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com) or through our [contact page](/contact).
 $privacy$,
   $md$How UrbanPulse collects, uses, and protects your personal data under Ghana's Data Protection Act.$md$,
   true,
@@ -242,20 +242,20 @@ $privacy$,
   'Terms of Service',
   $terms$
 ## 1. Acceptance of terms
-By accessing or using urbanpulse.com.gh (the "Site"), creating an account, or placing an order, you agree to be bound by these Terms of Service. If you do not agree, please do not use our services.
+By accessing or using this website (the "Site"), creating an account, or placing an order, you agree to be bound by these Terms of Service. If you do not agree, please do not use our services.
 
 ## 2. About us
 UrbanPulse is an online streetwear and accessories retailer operating in Ghana.
 
 Business registration number: [TODO — insert on registration]
-Contact: [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh)
+Contact: [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com)
 
 ## 3. Your account
 When you create an account, you agree to:
 - Provide accurate, current, and complete registration information
 - Maintain one account per person — multiple accounts are not permitted
 - Keep your password secure and not share it with others
-- Notify us immediately at [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh) if you believe your account has been accessed without authorisation
+- Notify us immediately at [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com) if you believe your account has been accessed without authorisation
 
 You are responsible for all activity that occurs under your account.
 

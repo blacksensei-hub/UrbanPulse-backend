@@ -10,7 +10,7 @@
 UPDATE content_pages
 SET title = 'FAQ',
     body = $faq$
-Can't find what you're looking for? Email [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh).
+Can't find what you're looking for? Email [noreply.urbanpulse0@gmail.com](mailto:noreply.urbanpulse0@gmail.com).
 
 ## Where do you deliver?
 Anywhere in Ghana. We don't ship internationally yet.
