@@ -61,28 +61,31 @@ $about$,
   'faq',
   'FAQ',
   $faq$
-Can't find what you're looking for? Email [support@urbanpulse.com](mailto:support@urbanpulse.com).
+Can't find what you're looking for? Email [support@urbanpulse.com.gh](mailto:support@urbanpulse.com.gh).
 
-## How long does shipping take?
-Standard shipping takes 5–7 business days. Express shipping is 2–3 business days. Free standard shipping on orders over GH₵ 1,000.
+## Where do you deliver?
+Anywhere in Ghana. We don't ship internationally yet.
+
+## How much is delivery?
+Standard delivery is GH₵30 and express is GH₵80. Orders over GH₵200 get free delivery. You'll see the exact cost at checkout before you pay.
+
+## How long does delivery take?
+It depends on where you are in Ghana. We'll email you as soon as your order ships, with tracking details when the courier provides them.
+
+## How can I pay?
+Mobile Money or card, securely through Paystack. You can also choose to pay on delivery at checkout.
 
 ## What is your return policy?
-You can return any unworn, unwashed item within 30 days of delivery for a full refund. Original packaging required. Final sale items cannot be returned.
+You have 30 days from delivery to return an item that's unworn and unwashed. Start a return from your account under Orders, and we'll take it from there.
 
 ## How do I know what size to order?
-Each product page has a size guide tailored to that piece. Our tees run boxy and true to size; outerwear is designed with room for layering.
-
-## Do you ship internationally?
-Not yet — we currently ship within Ghana only. International shipping is planned; sign up to our newsletter to hear when it launches.
+Every product page has a Size guide tab. If you're between sizes, email us and we'll help.
 
 ## How do I track my order?
-Once your order ships you'll get a tracking email. You can also view tracking info in your account under Orders.
+Sign in and open your account's Orders page to see where your order is. When it ships, you'll also get an email with tracking details when available.
 
 ## Can I change or cancel my order?
-Reach out to support within 1 hour of placing your order and we'll do our best. Once an order has shipped it can't be cancelled.
-
-## Are your products ethically made?
-Yes. All UrbanPulse pieces are produced in small batches at audited factories with fair-labor certification. We publish a yearly transparency report.
+Email us as soon as possible after ordering. If it hasn't shipped yet, we'll do our best to change or cancel it.
 $faq$,
   $md$Answers to common questions about shipping, returns, sizing, and order tracking at UrbanPulse.$md$,
   true,
