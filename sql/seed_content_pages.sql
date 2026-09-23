@@ -30,34 +30,30 @@ VALUES
   $about$
 **Built from here. For here.**
 
-UrbanPulse started with a question three friends couldn't shake: why does premium streetwear consistently ignore the cities that defined the culture? London, Tokyo, New York — the usual suspects — ship to Accra, Lagos, Nairobi. But they never come from there.
+UrbanPulse is a streetwear label from Accra, started and run by its founder, Jeffrey.
 
-In 2022, Kofi, Ama, and Daniel launched UrbanPulse out of a small workshop in East Legon. The brief was simple: make the best heavyweight tee we could at a price that made sense for the market, then build from there.
-
-Three years later, the collection spans outerwear, accessories, and a growing footwear line. Every piece is still designed in Accra. Every drop is still limited. The brief has never changed.
+It starts small on purpose. The first pieces are in the shop now, the Ghana Jersey and the Baggy Jeans, and the collection grows one drop at a time.
 
 ## What we stand for
 
-### Craft first.
-We start with fabric weight, stitch count, and finish. Every garment earns its place in the collection by meeting a minimum standard of quality that we set in the first sample run and have never compromised on.
-
-### Small batches.
-We never overproduce. Every drop is limited — enough to meet demand without flooding the market. Scarcity here isn't a marketing trick: it's a discipline that keeps us honest about what we make.
+### Small drops.
+New pieces arrive when they're ready, not to fill a catalogue.
 
 ### Made for here.
-UrbanPulse is a Ghana-first brand. Our sizing, our climate considerations, our distribution — all designed for the African city, not adapted from somewhere else as an afterthought.
+Built for Accra, and for the way people here shop: on the phone, paying with Mobile Money or card.
+
+### Straight answers.
+If something isn't right, you have 30 days to send it back.
 
 ## Behind the brand
 
-> We wanted to make something that felt like it came from here — not just sold here.
+> UrbanPulse is run by one person. When you message us, you're talking to me.
 >
-> — Kofi Mensah, Co-founder & Creative Director
-
-**Ready to wear it?** Every piece in the current collection ships within 48 hours across Ghana. Free returns, always.
+> — Jeffrey, Founder
 
 [Browse the collection](/shop) · [View the lookbook](/lookbook)
 $about$,
-  $md$UrbanPulse is a Ghana-first premium streetwear brand built on craft, small batches, and the cities that shaped street culture.$md$,
+  $md$UrbanPulse is a streetwear label from Accra. Shop the Ghana Jersey and Baggy Jeans, and pay with Mobile Money or card.$md$,
   true,
   (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1)
 ),
