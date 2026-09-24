@@ -1038,10 +1038,36 @@ router.get('/me/privacy-events', requireAuth, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+// ── GET /api/auth/me/consent ──────────────────────────────────────────────────
+// The account's most recent cookie answer, or null if it has never answered. This is what
+// makes the banner once-per-account rather than once-per-browser: a customer who answered on
+// their phone isn't asked again on their laptop. Read from the same admin_logs rows the POST
+// below writes, so no schema change; deliberately no 90-day cutoff, since an answer doesn't
+// expire just because it's old.
+router.get('/me/consent', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    `SELECT details, created_at
+     FROM admin_logs
+     WHERE admin_id = $1 AND action = 'user.consent_updated'
+     ORDER BY created_at DESC LIMIT 1`,
+    [req.user.id]
+  );
+  if (!rows.length) return res.json({ consent: null });
+  const d = rows[0].details || {};
+  res.json({
+    consent: {
+      functional: !!d.functional,
+      analytics:  !!d.analytics,
+      marketing:  !!d.marketing,
+      granted_at: rows[0].created_at,
+    },
+  });
+}));
+
 // ── POST /api/auth/me/consent-updated ─────────────────────────────────────────
-// Audit-trail only — NOT the enforcement mechanism. Cookie/marketing preference enforcement
-// is entirely client-side (localStorage); this just records that a change happened, for the
-// user's own "Recent privacy events" list.
+// Records the account's cookie answer. Cookie/marketing preference enforcement is
+// client-side (localStorage); this row is what GET /me/consent reads back on the next
+// sign-in, and it also feeds the user's own "Recent privacy events" list.
 router.post('/me/consent-updated', requireAuth, ...rejectViewAsWrites, asyncHandler(async (req, res) => {
   const { functional, analytics, marketing } = req.body ?? {};
   await logAdminAction(
