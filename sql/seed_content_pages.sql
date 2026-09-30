@@ -171,6 +171,7 @@ We collect the following categories of personal data:
 - **Order data** — shipping address, items purchased, order history, and payment status.
 - **Payment data** — all payment processing is handled by Paystack. We never see or store your card details, mobile money PIN, or bank credentials. Paystack is PCI-DSS certified.
 - **Browsing data** — pages you view, items added to your cart or wishlist, and session information for authentication.
+- **Drop list** — the email address or phone number you give to hear about new drops. We use it only for those announcements, and every message has a link to unsubscribe.
 - **Restock requests** — the email address or phone number you give when you ask to be told a sold-out size is back. We use it for that one message and nothing else.
 - **Communications** — emails, SMS messages, and WhatsApp messages you exchange with our support team.
 

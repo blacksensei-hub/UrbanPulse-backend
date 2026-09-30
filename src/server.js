@@ -27,6 +27,8 @@ import settingsRoutes from './routes/settings.js';
 import loyaltyRoutes from './routes/loyalty.js';
 import addressRoutes from './routes/addresses.js';
 import statsRoutes from './routes/stats.js';
+import dropRoutes from './routes/drops.js';
+import adminDropRoutes from './routes/adminDrops.js';
 import './jobs/index.js';
 
 if (process.env.SENTRY_DSN) {
@@ -142,6 +144,7 @@ app.use('/api/content', contentRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/checkout', checkoutRoutes);
+app.use('/api/admin/drops', adminDropRoutes);   // before /api/admin, which would claim it
 app.use('/api/admin', adminRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/referrals', referralRoutes);
@@ -150,6 +153,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/loyalty', loyaltyRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/drops', dropRoutes);
 
 if (process.env.SENTRY_DSN) {
   Sentry.setupExpressErrorHandler(app);

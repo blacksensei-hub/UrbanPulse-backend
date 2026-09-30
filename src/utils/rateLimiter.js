@@ -41,6 +41,15 @@ export const alertLimiter = rateLimit({
   message: { error: 'Too many requests. Try again shortly.' },
 });
 
+// Drop list sign-ups.
+export const dropLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sign-ups from here. Try again in a few minutes.' },
+});
+
 // Anonymous page-view counts: generous (every page), but capped per IP.
 export const statsLimiter = rateLimit({
   windowMs: 60 * 1000,

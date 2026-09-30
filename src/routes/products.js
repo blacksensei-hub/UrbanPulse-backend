@@ -5,16 +5,7 @@ import { requireAuth, optionalAuth, rejectViewAsWrites } from '../middleware/aut
 import { requireFeature } from '../utils/settingsCache.js';
 import { alertLimiter } from '../utils/rateLimiter.js';
 import { isMissingTable } from '../utils/stockAlerts.js';
-
-// Ghana numbers to the 233XXXXXXXXX form the SMS gateway expects:
-// 024 123 4567, +233 24 123 4567 and 233241234567 all become 233241234567.
-function ghanaPhone(raw) {
-  const d = String(raw || '').replace(/\D/g, '');
-  if (/^0\d{9}$/.test(d)) return `233${d.slice(1)}`;
-  if (/^233\d{9}$/.test(d)) return d;
-  if (/^\d{9}$/.test(d)) return `233${d}`;
-  return null;
-}
+import { ghanaPhone } from '../utils/phone.js';
 
 const router = express.Router();
 

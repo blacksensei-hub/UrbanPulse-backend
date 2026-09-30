@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { logger } from './logger.js';
 import { getSettings } from './settingsCache.js';
+import { whatsappDigits } from './phone.js';
 
 let transporter = null;
 
@@ -46,7 +47,7 @@ function markdownToHtml(raw) {
     .join('');
 }
 
-function markdownToText(raw) {
+export function markdownToText(raw) {
   return String(raw ?? '')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '$1 ($2)')
     .replace(/\*\*(.+?)\*\*/g, '$1')
@@ -129,7 +130,12 @@ function h1(text) {
 // Mail don't pull trailing body text into the inbox preview snippet.
 const PREHEADER_PAD = '&nbsp;&zwnj;'.repeat(60);
 
-function renderLayout({ preheader, bodyHtml, transactional = true }) {
+// `footerNote` (trusted HTML) replaces the default "why you got this" line,
+// e.g. the drop list's unsubscribe note.
+function renderLayout({ preheader, bodyHtml, transactional = true, footerNote = null }) {
+  const why = footerNote
+    ? `<br/><br/>${footerNote}`
+    : transactional ? '' : '<br/><br/>You are receiving this because you have an UrbanPulse account. This is a one-off notice, not a recurring newsletter.';
   return `<!doctype html>
 <html>
 <head>
@@ -160,7 +166,7 @@ function renderLayout({ preheader, bodyHtml, transactional = true }) {
               <a href="${frontendUrl()}/returns-policy" style="color:${COLOR.muted};text-decoration:underline;">Returns policy</a>
               &nbsp;·&nbsp;
               <a href="${frontendUrl()}/privacy" style="color:${COLOR.muted};text-decoration:underline;">Privacy</a>
-              ${transactional ? '' : '<br/><br/>You are receiving this because you have an UrbanPulse account. This is a one-off notice, not a recurring newsletter.'}
+              ${why}
             </td>
           </tr>
         </table>
@@ -171,8 +177,11 @@ function renderLayout({ preheader, bodyHtml, transactional = true }) {
 </html>`;
 }
 
-function renderTextFooter({ transactional = true } = {}) {
-  return `\n\n—\nSupport: {{SUPPORT_EMAIL_TEXT}}{{SUPPORT_WHATSAPP_TEXT}}\nMade in Ghana\nReturns policy: ${frontendUrl()}/returns-policy\nPrivacy: ${frontendUrl()}/privacy${transactional ? '' : '\n\nYou are receiving this because you have an UrbanPulse account. This is a one-off notice, not a recurring newsletter.'}`;
+function renderTextFooter({ transactional = true, footerNote = null } = {}) {
+  const why = footerNote
+    ? `\n\n${footerNote}`
+    : transactional ? '' : '\n\nYou are receiving this because you have an UrbanPulse account. This is a one-off notice, not a recurring newsletter.';
+  return `\n\n—\nSupport: {{SUPPORT_EMAIL_TEXT}}{{SUPPORT_WHATSAPP_TEXT}}\nMade in Ghana\nReturns policy: ${frontendUrl()}/returns-policy\nPrivacy: ${frontendUrl()}/privacy${why}`;
 }
 
 // ─── Settings-token substitution, resolved once at send time ────────────────
@@ -205,13 +214,13 @@ function getTransporter() {
   return transporter;
 }
 
-export async function sendEmail({ to, subject, html, text }) {
+export async function sendEmail({ to, subject, html, text, headers }) {
   const settings = await getSettings().catch((err) => {
     logger.error('sendEmail: getSettings failed, falling back to default contact info', { err: err.message });
     return {};
   });
   const supportEmail = settings.support_email || 'noreply.urbanpulse0@gmail.com';
-  const waDigits = (settings.support_whatsapp || '').replace(/\D/g, '');
+  const waDigits = whatsappDigits(settings.support_whatsapp);
   const tokens = {
     supportEmailHtml: `<a href="mailto:${supportEmail}" style="color:${COLOR.muted};text-decoration:underline;">${supportEmail}</a>`,
     supportEmailText: supportEmail,
@@ -232,6 +241,7 @@ export async function sendEmail({ to, subject, html, text }) {
     from: process.env.SMTP_FROM || 'UrbanPulse <noreply@urbanpulse.com>',
     replyTo: supportEmail,
     to, subject, html: resolvedHtml, text: resolvedText,
+    ...(headers ? { headers } : {}),
   });
 }
 
@@ -272,6 +282,26 @@ export const emailTemplates = {
       subject: `Back in stock: ${productName}${variant ? ` (${variant})` : ''}`,
       html: renderLayout({ preheader: `${productName} is back in stock`, bodyHtml }),
       text: `${productName} is back in stock${variant ? ` (${variant})` : ''}.\n\nShop it: ${url}\n\nYou asked us to tell you once; you won't get another message about it.${renderTextFooter()}`,
+    };
+  },
+
+  // A drop announcement from Admin → Drop list, to someone who joined the
+  // list. The admin's own text is the body; every one carries its own
+  // unsubscribe link.
+  drop: ({ subject, message, product, url, unsubscribeUrl }) => {
+    const bodyHtml = `
+      ${eyebrow('New drop')}
+      ${h1(escapeHtml(subject))}
+      ${product?.image ? `<a href="${escapeHtml(url)}" style="display:block;margin:0 0 16px;"><img src="${escapeHtml(product.image)}" width="536" alt="${escapeHtml(product.name)}" style="width:100%;max-width:536px;height:auto;border-radius:12px;display:block;" /></a>` : ''}
+      ${product ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;"><strong style="font-weight:600;">${escapeHtml(product.name)}</strong> &nbsp;·&nbsp; ${formatGHS(product.price)}</p>` : ''}
+      ${markdownToHtml(message)}
+      ${ctaButton(product ? 'Shop it now' : 'Shop the drop', url)}
+    `;
+    const note = `You're getting this because you joined the UrbanPulse drop list. <a href="${escapeHtml(unsubscribeUrl)}" style="color:${COLOR.muted};text-decoration:underline;">Unsubscribe</a>`;
+    return {
+      subject,
+      html: renderLayout({ preheader: markdownToText(message).slice(0, 140), bodyHtml, footerNote: note }),
+      text: `${subject}\n\n${product ? `${product.name} · ${formatGHS(product.price)}\n\n` : ''}${markdownToText(message)}\n\nShop: ${url}${renderTextFooter({ footerNote: `You're getting this because you joined the UrbanPulse drop list. Unsubscribe: ${unsubscribeUrl}` })}`,
     };
   },
 

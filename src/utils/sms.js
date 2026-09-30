@@ -44,4 +44,8 @@ export const smsTemplates = {
   delivered:  (o) => `UrbanPulse: Order ${o.order_number} has been delivered. Enjoy your purchase!`,
   backInStock: ({ productName, size, url }) =>
     `UrbanPulse: ${productName}${size ? ` (${size})` : ''} is back in stock. ${url}`,
+  // Drop announcement. `message` is already plain text; the stop link is
+  // required in every one.
+  drop: ({ message, url, stopUrl }) =>
+    `UrbanPulse: ${message.trim()} ${url} Stop: ${stopUrl}`,
 };
