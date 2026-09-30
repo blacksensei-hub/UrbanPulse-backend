@@ -11,6 +11,7 @@ import { logger } from './utils/logger.js';
 import { generalLimiter } from './utils/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { query } from './db/index.js';
+import { siteUrl } from './utils/site.js';
 
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
@@ -72,7 +73,7 @@ app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); nex
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 app.get('/robots.txt', (_req, res) => {
-  const base = process.env.FRONTEND_URL || 'https://urbanpulse.com';
+  const base = siteUrl();
   res.setHeader('Content-Type', 'text/plain');
   res.send(
     `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\nDisallow: /account\nDisallow: /cart\nDisallow: /checkout\nSitemap: ${base}/sitemap.xml\n`
@@ -97,7 +98,7 @@ const STATIC_PAGES = [
 ];
 
 async function generateSitemap() {
-  const base = process.env.FRONTEND_URL || 'https://urbanpulse.com';
+  const base = siteUrl();
   const { rows } = await query(
     `SELECT slug, updated_at FROM products WHERE is_active = true ORDER BY updated_at DESC`
   );

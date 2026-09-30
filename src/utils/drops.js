@@ -3,8 +3,9 @@ import { query } from '../db/index.js';
 import { sendEmail, emailTemplates, markdownToText } from './email.js';
 import { sendSMS, smsTemplates } from './sms.js';
 import { logger } from './logger.js';
+import { siteUrl } from './site.js';
 
-export const siteUrl = () => (process.env.FRONTEND_URL || 'https://urbanpulsee.vercel.app').replace(/\/$/, '');
+export { siteUrl };
 export const newToken = () => crypto.randomBytes(8).toString('base64url');   // 11 characters
 export const stopUrl = (token) => `${siteUrl()}/stop/${token}`;
 

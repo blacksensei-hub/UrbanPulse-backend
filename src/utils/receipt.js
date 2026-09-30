@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { getSettings } from './settingsCache.js';
+import { siteHost } from './site.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -183,7 +184,7 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
     doc.font('Sans').fontSize(8.5).fillColor(MUTED)
        .text('Thank you for shopping with UrbanPulse.',
              50, FY + 10, { align: 'center', width: 495 })
-       .text('Returns accepted within 30 days — see urbanpulse.com.gh/returns-policy',
+       .text(`Returns accepted within 30 days — see ${siteHost()}/returns-policy`,
              50, FY + 22, { align: 'center', width: 495 })
        .text(BUSINESS.email,
              50, FY + 34, { align: 'center', width: 495 });

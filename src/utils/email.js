@@ -238,7 +238,11 @@ export async function sendEmail({ to, subject, html, text, headers }) {
     return;
   }
   await t.sendMail({
-    from: process.env.SMTP_FROM || 'UrbanPulse <noreply@urbanpulse.com>',
+    // Without SMTP_FROM, send as the account we sign in with: a made-up
+    // address (the old 'noreply@urbanpulse.com', a domain the store doesn't
+    // own) gets rewritten by Gmail or flagged as spoofed by other providers.
+    from: process.env.SMTP_FROM
+      || `UrbanPulse <${/@/.test(process.env.SMTP_USER || '') ? process.env.SMTP_USER : 'noreply.urbanpulse0@gmail.com'}>`,
     replyTo: supportEmail,
     to, subject, html: resolvedHtml, text: resolvedText,
     ...(headers ? { headers } : {}),

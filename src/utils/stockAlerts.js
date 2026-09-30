@@ -3,7 +3,7 @@ import { sendEmail, emailTemplates } from './email.js';
 import { sendSMS, smsTemplates } from './sms.js';
 import { logger } from './logger.js';
 
-const frontendUrl = () => (process.env.FRONTEND_URL || 'https://urbanpulsee.vercel.app').replace(/\/$/, '');
+import { siteUrl as frontendUrl } from './site.js';
 
 // Postgres "relation does not exist": the migration hasn't been run yet.
 export const isMissingTable = (err) => err?.code === '42P01' || err?.code === '42703';
