@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { logger } from './logger.js';
 import { getSettings } from './settingsCache.js';
 import { whatsappDigits } from './phone.js';
+import { vatLabel } from './vat.js';
 
 let transporter = null;
 
@@ -309,7 +310,7 @@ export const emailTemplates = {
     };
   },
 
-  orderConfirmation: (order, items = [], { couponDiscount = 0, expressRateGhs = null } = {}) => {
+  orderConfirmation: (order, items = [], { couponDiscount = 0, expressRateGhs = null, taxRatePercent = null } = {}) => {
     const orderUrl = `${frontendUrl()}/account/orders/${order.id}`;
     const address = parseAddress(order.shipping_address);
     const first = firstName(address.name);
@@ -348,7 +349,7 @@ export const emailTemplates = {
     const totalsHtml = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:8px 0 20px;">
       ${totalsRow('Subtotal', formatGHS(subtotal))}
       ${totalsRow('Shipping', shipping === 0 ? 'Free' : formatGHS(shipping))}
-      ${totalsRow('VAT (12.5%)', formatGHS(tax))}
+      ${totalsRow(vatLabel(order, taxRatePercent), formatGHS(tax))}
       ${discount > 0 ? totalsRow('Discount', `− ${formatGHS(discount)}`) : ''}
       ${credit > 0 ? totalsRow('Store credit', `− ${formatGHS(credit)}`) : ''}
       ${totalsRow('Total', formatGHS(total), { bold: true, hairline: true })}
@@ -397,7 +398,7 @@ export const emailTemplates = {
     const totalsText = [
       `Subtotal: ${formatGHS(subtotal)}`,
       `Shipping: ${shipping === 0 ? 'Free' : formatGHS(shipping)}`,
-      `VAT (12.5%): ${formatGHS(tax)}`,
+      `${vatLabel(order, taxRatePercent)}: ${formatGHS(tax)}`,
       discount > 0 ? `Discount: − ${formatGHS(discount)}` : null,
       credit > 0 ? `Store credit: − ${formatGHS(credit)}` : null,
       `Total: ${formatGHS(total)}`,

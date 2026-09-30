@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { getSettings } from './settingsCache.js';
 import { siteHost } from './site.js';
+import { vatLabel } from './vat.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -170,7 +171,7 @@ export async function generateReceiptPDF(order, items, user, { couponDiscount = 
 
     totRow('Subtotal',    formatGHS(subtotal));
     totRow('Shipping',    shipping === 0 ? 'Free' : formatGHS(shipping));
-    totRow('VAT (12.5%)', formatGHS(tax));
+    totRow(vatLabel(order, settings.tax_rate_percent), formatGHS(tax));
     if (couponDiscount > 0) totRow('Discount',     `− ${formatGHS(couponDiscount)}`);
     if (credit > 0)         totRow('Store credit', `− ${formatGHS(credit)}`);
 

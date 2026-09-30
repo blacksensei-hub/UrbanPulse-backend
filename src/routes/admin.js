@@ -2716,7 +2716,7 @@ router.post('/customers/:id/resend-confirmation', asyncHandler(async (req, res) 
     + Number(order.bundle_discount_ghs || 0);
   const cfg = await getSettings();
   const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
-  const tpl = emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs });
+  const tpl = emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs, taxRatePercent: cfg.tax_rate_percent });
   await sendEmail({ to: customer.email, ...tpl });
 
   await query(

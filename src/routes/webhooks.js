@@ -79,7 +79,7 @@ router.post('/paystack', async (req, res) => {
             + Number(order.bundle_discount_ghs || 0);
           const cfg = await getSettings();
           const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
-          await sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs }) })
+          await sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs, taxRatePercent: cfg.tax_rate_percent }) })
             .catch((err) => logger.error('Order confirmation email failed', { orderId: order.id, err: err.message }));
         }
         if (phone) {
