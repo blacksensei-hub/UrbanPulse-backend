@@ -82,23 +82,24 @@ router.post('/test', asyncHandler(async (req, res) => {
   const draft = draftFrom(req.body);
   const product = await dropProduct(draft.product_id);
   const sentTo = [];
+  const loggedOnly = [];   // channels with no provider set up: written to the log, not sent
   const token = 'testmessage';   // same length as a real token, so the text counts true
   try {
     if (draft.channels.includes('email')) {
       await sendDrop({ channel: 'email', address: req.user.email, token }, draft, product);
-      sentTo.push(req.user.email);
+      (process.env.SMTP_HOST ? sentTo : loggedOnly).push(req.user.email);
     }
     if (draft.channels.includes('sms')) {
       const phone = ghanaPhone(req.body?.test_phone);
       if (!phone) throw badRequest('Add your phone number to get the test text.');
       await sendDrop({ channel: 'sms', address: phone, token }, draft, product);
-      sentTo.push(`+${phone}`);
+      (process.env.SMS_API_KEY ? sentTo : loggedOnly).push(`+${phone}`);
     }
   } catch (err) {
     if (err.status) throw err;
     return res.status(502).json({ error: `The test didn't send: ${err.message}`, sent_to: sentTo });
   }
-  res.json({ ok: true, sent_to: sentTo });
+  res.json({ ok: true, sent_to: sentTo, logged_only: loggedOnly });
 }));
 
 // POST /broadcasts: fix the recipient list and start. Nothing is sent here;

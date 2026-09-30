@@ -35,7 +35,8 @@ router.post('/hit', statsLimiter, asyncHandler(async (req, res) => {
   res.status(204).end();                       // never make the page wait
   if (BOT.test(req.get('user-agent') || '')) return;
   const b = req.body || {};
-  const path = String(b.path || '').split(/[?#]/)[0].slice(0, 160);
+  // /stop/<code> unsubscribe links carry a private code: never store it.
+  const path = String(b.path || '').split(/[?#]/)[0].slice(0, 160).replace(/^\/stop\/.*/, '/stop');
   if (!path.startsWith('/') || path.startsWith('/admin') || path.startsWith('/api')) return;
   const device = DEVICES.has(b.device) ? b.device : '';
   const ownHost = String(req.get('host') || '').replace(/^www\./, '').split(':')[0];
