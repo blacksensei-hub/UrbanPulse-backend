@@ -82,7 +82,7 @@ You have 30 days from delivery to return an item that's unworn and unwashed. Sta
 Every product page has a Size guide tab. If you're between sizes, email us and we'll help.
 
 ## How do I track my order?
-Sign in and open your account's Orders page to see where your order is. When it ships, you'll also get an email with tracking details when available.
+Use [Track an order](/track) with your order number and the email or phone you ordered with, or sign in and open your account's Orders page. When it ships, you'll also get an email with tracking details when available.
 
 ## Can I change or cancel my order?
 Email us as soon as possible after ordering. If it hasn't shipped yet, we'll do our best to change or cancel it.
@@ -171,6 +171,7 @@ We collect the following categories of personal data:
 - **Order data** — shipping address, items purchased, order history, and payment status.
 - **Payment data** — all payment processing is handled by Paystack. We never see or store your card details, mobile money PIN, or bank credentials. Paystack is PCI-DSS certified.
 - **Browsing data** — pages you view, items added to your cart or wishlist, and session information for authentication.
+- **Restock requests** — the email address or phone number you give when you ask to be told a sold-out size is back. We use it for that one message and nothing else.
 - **Communications** — emails, SMS messages, and WhatsApp messages you exchange with our support team.
 
 ## 3. How we use your data
@@ -194,6 +195,8 @@ We do not sell, rent, or trade your personal data to advertisers or any other th
 
 ## 5. Cookies and tracking
 We use session cookies to keep you logged in during your visit. These are strictly necessary and cannot be turned off without breaking authentication.
+
+We count visits ourselves, anonymously: for each day we keep how many times each page was viewed, which site or tagged link a visit came from, and whether it was a phone, tablet or desktop. We do not store IP addresses, set cookies for this, or link a count to you or your account, and if you reject analytics in the cookie banner while signed in, your visits are not counted at all.
 
 We do not currently use any third-party analytics trackers or advertising pixels. If this changes, we will update this policy and notify registered users.
 

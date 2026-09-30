@@ -31,7 +31,7 @@ You have 30 days from delivery to return an item that's unworn and unwashed. Sta
 Every product page has a Size guide tab. If you're between sizes, email us and we'll help.
 
 ## How do I track my order?
-Sign in and open your account's Orders page to see where your order is. When it ships, you'll also get an email with tracking details when available.
+Use [Track an order](/track) with your order number and the email or phone you ordered with, or sign in and open your account's Orders page. When it ships, you'll also get an email with tracking details when available.
 
 ## Can I change or cancel my order?
 Email us as soon as possible after ordering. If it hasn't shipped yet, we'll do our best to change or cancel it.

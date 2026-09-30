@@ -22,6 +22,33 @@ export const adminLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Order tracking by number + phone/email: slow enough that guessing order
+// numbers is pointless.
+export const lookupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many lookups. Try again in a few minutes.' },
+});
+
+// "Notify me" sign-ups.
+export const alertLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Try again shortly.' },
+});
+
+// Anonymous page-view counts: generous (every page), but capped per IP.
+export const statsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 90,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Keyed by authenticated user id, not IP — must be mounted AFTER requireAuth so
 // req.user.id is populated when keyGenerator runs.
 export const dataExportLimiter = rateLimit({

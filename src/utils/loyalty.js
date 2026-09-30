@@ -91,7 +91,9 @@ export async function awardPointsForOrder(client, order) {
     `SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1`,
     [order.id]
   );
-  const discount = Number(discountRow?.discount_amount ?? 0);
+  // Points are earned on what was actually paid for goods: net of coupon and
+  // bundle savings alike.
+  const discount = Number(discountRow?.discount_amount ?? 0) + Number(order.bundle_discount_ghs || 0);
   const earnBasis = Math.max(0, Number(order.subtotal) - discount);
 
   const earnRate = Number(cfg.loyalty_earn_rate ?? 1); // points per GH₵10 spent

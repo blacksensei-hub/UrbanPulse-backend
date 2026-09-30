@@ -26,6 +26,7 @@ import returnsRoutes from './routes/returns.js';
 import settingsRoutes from './routes/settings.js';
 import loyaltyRoutes from './routes/loyalty.js';
 import addressRoutes from './routes/addresses.js';
+import statsRoutes from './routes/stats.js';
 import './jobs/index.js';
 
 if (process.env.SENTRY_DSN) {
@@ -148,6 +149,7 @@ app.use('/api/returns', returnsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/loyalty', loyaltyRoutes);
 app.use('/api/addresses', addressRoutes);
+app.use('/api/stats', statsRoutes);
 
 if (process.env.SENTRY_DSN) {
   Sentry.setupExpressErrorHandler(app);

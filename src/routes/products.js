@@ -1,8 +1,20 @@
 import express from 'express';
 import { query } from '../db/index.js';
 import { asyncHandler, notFound, badRequest, forbidden } from '../utils/helpers.js';
-import { requireAuth, rejectViewAsWrites } from '../middleware/auth.js';
+import { requireAuth, optionalAuth, rejectViewAsWrites } from '../middleware/auth.js';
 import { requireFeature } from '../utils/settingsCache.js';
+import { alertLimiter } from '../utils/rateLimiter.js';
+import { isMissingTable } from '../utils/stockAlerts.js';
+
+// Ghana numbers to the 233XXXXXXXXX form the SMS gateway expects:
+// 024 123 4567, +233 24 123 4567 and 233241234567 all become 233241234567.
+function ghanaPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (/^0\d{9}$/.test(d)) return `233${d.slice(1)}`;
+  if (/^233\d{9}$/.test(d)) return d;
+  if (/^\d{9}$/.test(d)) return `233${d}`;
+  return null;
+}
 
 const router = express.Router();
 
@@ -116,6 +128,40 @@ router.get('/by-ids', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/products/:slug
+// POST /api/products/:id/stock-alerts: "tell me when this size is back".
+// One pending alert per person per size (asking twice is a no-op); sent once,
+// by utils/stockAlerts.js, when the size is restocked.
+router.post('/:id(\\d+)/stock-alerts', alertLimiter, optionalAuth, asyncHandler(async (req, res) => {
+  const productId = Number(req.params.id);
+  const variantId = Number(req.body?.variant_id);
+  const email = String(req.body?.email ?? '').trim().toLowerCase() || null;
+  const phoneRaw = String(req.body?.phone ?? '').trim();
+  const phone = phoneRaw ? ghanaPhone(phoneRaw) : null;
+  if (!variantId) throw badRequest('Choose a size first.');
+  if (!email && !phone) throw badRequest('Add an email address or a phone number.');
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw badRequest("That email address doesn't look right.");
+  if (phoneRaw && !phone) throw badRequest("That phone number doesn't look right. Try 024 123 4567.");
+
+  const { rows: [v] } = await query(
+    `SELECT pv.stock, p.is_active FROM product_variants pv JOIN products p ON p.id = pv.product_id
+      WHERE pv.id = $1 AND pv.product_id = $2`,
+    [variantId, productId],
+  );
+  if (!v || !v.is_active) throw notFound('Product not found');
+  if (v.stock > 0) return res.json({ ok: true, in_stock: true });
+
+  try {
+    await query(
+      'INSERT INTO stock_alerts (variant_id, product_id, email, phone, user_id) VALUES ($1,$2,$3,$4,$5)',
+      [variantId, productId, email, phone, req.user?.id ?? null],
+    );
+  } catch (err) {
+    if (isMissingTable(err)) return res.status(503).json({ error: "Back-in-stock alerts aren't switched on yet." });
+    if (err.code !== '23505') throw err;   // already waiting on this size: fine
+  }
+  res.status(201).json({ ok: true });
+}));
+
 router.get('/:slug', asyncHandler(async (req, res) => {
   const { rows } = await query('SELECT * FROM products WHERE slug = $1', [req.params.slug]);
   const product = rows[0];

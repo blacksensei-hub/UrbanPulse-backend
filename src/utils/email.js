@@ -256,6 +256,25 @@ export const emailTemplates = {
     };
   },
 
+  // Sent once, to someone who asked to hear when a sold-out size came back.
+  backInStock: ({ productName, slug, size, color, image }) => {
+    const url = `${frontendUrl()}/products/${encodeURIComponent(slug)}`;
+    const variant = [size, color].filter(Boolean).join(' · ');
+    const bodyHtml = `
+      ${eyebrow('Back in stock')}
+      ${h1(`${escapeHtml(productName)} is back.`)}
+      ${image ? `<img src="${escapeHtml(image)}" width="240" alt="${escapeHtml(productName)}" style="width:240px;max-width:100%;height:auto;border-radius:10px;display:block;margin:0 0 20px;" />` : ''}
+      <p style="margin:0 0 20px;font-size:15px;line-height:1.6;">${variant ? `The one you asked about, <strong>${escapeHtml(variant)}</strong>, is in stock again.` : 'The one you asked about is in stock again.'} Stock is limited, so it may not last.</p>
+      ${ctaButton('Shop it now', url)}
+      <p style="margin:20px 0 0;font-size:13px;line-height:1.6;color:${COLOR.muted};">You asked us to tell you once. This is that message; you won't get another about it.</p>
+    `;
+    return {
+      subject: `Back in stock: ${productName}${variant ? ` (${variant})` : ''}`,
+      html: renderLayout({ preheader: `${productName} is back in stock`, bodyHtml }),
+      text: `${productName} is back in stock${variant ? ` (${variant})` : ''}.\n\nShop it: ${url}\n\nYou asked us to tell you once; you won't get another message about it.${renderTextFooter()}`,
+    };
+  },
+
   orderConfirmation: (order, items = [], { couponDiscount = 0, expressRateGhs = null } = {}) => {
     const orderUrl = `${frontendUrl()}/account/orders/${order.id}`;
     const address = parseAddress(order.shipping_address);

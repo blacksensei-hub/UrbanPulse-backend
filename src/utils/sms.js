@@ -42,4 +42,6 @@ export const smsTemplates = {
   processing: (o) => `UrbanPulse: Order ${o.order_number} is being prepared and will ship soon.`,
   shipped:    (o) => `UrbanPulse: Order ${o.order_number} has shipped! Check your email for tracking info.`,
   delivered:  (o) => `UrbanPulse: Order ${o.order_number} has been delivered. Enjoy your purchase!`,
+  backInStock: ({ productName, size, url }) =>
+    `UrbanPulse: ${productName}${size ? ` (${size})` : ''} is back in stock. ${url}`,
 };

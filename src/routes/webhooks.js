@@ -74,7 +74,9 @@ router.post('/paystack', async (req, res) => {
             'SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1',
             [order.id]
           );
-          const couponDiscount = couponRows[0] ? Number(couponRows[0].discount_amount) : 0;
+          // Bundle saving included, or the email would show it as store credit.
+          const couponDiscount = (couponRows[0] ? Number(couponRows[0].discount_amount) : 0)
+            + Number(order.bundle_discount_ghs || 0);
           const cfg = await getSettings();
           const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
           await sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs }) })

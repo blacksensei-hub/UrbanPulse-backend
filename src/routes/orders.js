@@ -7,6 +7,8 @@ import { generateReceiptPDF } from '../utils/receipt.js';
 import { getSettings } from '../utils/settingsCache.js';
 import { redeemPoints } from '../utils/loyalty.js';
 import { logger } from '../utils/logger.js';
+import { shippingFor, bundleDiscount } from '../utils/pricing.js';
+import { lookupLimiter } from '../utils/rateLimiter.js';
 
 async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId }) {
   const cp = await queryFn.query(
@@ -55,14 +57,10 @@ const router = express.Router();
 
 // POST /api/orders/preview  — validate coupon without creating an order
 router.post('/preview', optionalAuth, asyncHandler(async (req, res) => {
-  const { coupon_code, subtotal: rawSubtotal, shipping_method } = req.body;
+  const { coupon_code, subtotal: rawSubtotal, shipping_method, region } = req.body;
   if (!coupon_code || rawSubtotal == null) throw badRequest('coupon_code and subtotal required');
   const subtotal = Number(rawSubtotal);
-  const _s = await getSettings();
-  const _std = Number(_s.shipping_standard_ghs ?? 30);
-  const _exp = Number(_s.shipping_express_ghs ?? 80);
-  const _thr = Number(_s.free_shipping_threshold_ghs ?? 1000);
-  const shipping = shipping_method === 'express' ? _exp : (subtotal >= _thr ? 0 : _std);
+  const shipping = shippingFor({ subtotal, method: shipping_method, region, settings: await getSettings() });
   const result = await resolveCoupon(
     { query: (sql, p) => query(sql, p) },
     coupon_code,
@@ -125,12 +123,14 @@ router.post(
 
       const subtotal = items.rows.reduce((s, it) => s + Number(it.price) * it.quantity, 0);
       const cfg = await getSettings();
-      const stdRate    = Number(cfg.shipping_standard_ghs    ?? 30);
-      const expRate    = Number(cfg.shipping_express_ghs     ?? 80);
-      const freeThresh = Number(cfg.free_shipping_threshold_ghs ?? 1000);
       const taxRate    = Number(cfg.tax_rate_percent         ?? 12.5) / 100;
-      const shipping = shipping_method === 'express' ? expRate : (subtotal >= freeThresh ? 0 : stdRate);
+      // Delivery by region (utils/pricing.js); identical to the old flat
+      // rule while region pricing is off.
+      const shipping = shippingFor({ subtotal, method: shipping_method, region: shipping_address?.state, settings: cfg });
       const tax = +(subtotal * taxRate).toFixed(2);
+      // Bundle saving, applied before coupon/credit/points and recorded on
+      // the order so receipts and emails show it as a discount.
+      const bundle = bundleDiscount(items.rows, cfg);
 
       // site_settings.value is jsonb — a stored false round-trips as a native
       // boolean, not the string 'false', so both forms must be checked (see
@@ -159,7 +159,7 @@ router.post(
           [req.user.id]
         );
         const available = Number(creditRow?.bal ?? 0);
-        const maxApplicable = +(subtotal + shipping + tax - discount).toFixed(2);
+        const maxApplicable = +(subtotal + shipping + tax - bundle.discount - discount).toFixed(2);
         creditApplied = +Math.min(Number(apply_store_credit_ghs), available, maxApplicable).toFixed(2);
         creditApplied = Math.max(0, creditApplied);
       }
@@ -177,7 +177,7 @@ router.post(
         const pointsBalance = Number(loyaltyRow?.bal ?? 0);
         const minRedeemPoints = Number(cfg.loyalty_min_redeem_points ?? 100);
         const redeemRateGhs = Number(cfg.loyalty_redeem_rate_ghs ?? 0.1);
-        const preLoyaltyTotal = +(subtotal + shipping + tax - discount - creditApplied).toFixed(2);
+        const preLoyaltyTotal = +(subtotal + shipping + tax - bundle.discount - discount - creditApplied).toFixed(2);
         const maxByTotal = Math.floor(preLoyaltyTotal / redeemRateGhs);
 
         pointsRedeemed = Math.min(Math.floor(Number(apply_loyalty_points)), pointsBalance, maxByTotal);
@@ -186,18 +186,27 @@ router.post(
         pointsCediValue = +(pointsRedeemed * redeemRateGhs).toFixed(2);
       }
 
-      const total = +(subtotal + shipping + tax - discount - creditApplied - pointsCediValue).toFixed(2);
+      const total = +(subtotal + shipping + tax - bundle.discount - discount - creditApplied - pointsCediValue).toFixed(2);
       const orderNumber = generateOrderNumber();
 
       const orderStatus = payment_method === 'cod' ? 'awaiting_confirmation' : 'pending';
-      const o = await c.query(
-        `INSERT INTO orders
-           (user_id, email, order_number, subtotal, shipping_cost, tax, total, shipping_address, payment_method, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-        [req.user?.id ?? null, email ?? req.user?.email ?? null,
+      const baseCols = [req.user?.id ?? null, email ?? req.user?.email ?? null,
          orderNumber, subtotal, shipping, tax, total, shipping_address,
-         payment_method, orderStatus]
-      );
+         payment_method, orderStatus];
+      // The bundle columns are only written when a bundle applied, so an
+      // order never depends on them while bundles are unused.
+      const o = bundle.discount > 0
+        ? await c.query(
+          `INSERT INTO orders
+             (user_id, email, order_number, subtotal, shipping_cost, tax, total, shipping_address, payment_method, status,
+              bundle_discount_ghs, bundle_note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+          [...baseCols, bundle.discount, bundle.note])
+        : await c.query(
+          `INSERT INTO orders
+             (user_id, email, order_number, subtotal, shipping_cost, tax, total, shipping_address, payment_method, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          baseCols);
       const orderId = o.rows[0].id;
 
       // Auto-save this shipping address to the customer's address book, deduped on
@@ -338,6 +347,48 @@ router.post(
   })
 );
 
+// POST /api/orders/track: order status without an account.
+// Needs the order number AND the email or phone used on the order, and is
+// rate-limited, so knowing (or guessing) an order number alone reveals
+// nothing. Returns status, timeline and items; never the address or payment.
+const lastDigits = (v) => String(v || '').replace(/\D/g, '').slice(-9);
+router.post('/track', lookupLimiter, asyncHandler(async (req, res) => {
+  const number = String(req.body?.order_number ?? '').trim().toUpperCase();
+  const contact = String(req.body?.contact ?? '').trim().toLowerCase();
+  if (!number || !contact) throw badRequest('Enter your order number and the email or phone you ordered with.');
+  const notFoundMsg = "We couldn't find an order with those details. Check the order number and the email or phone you used.";
+
+  const { rows: [o] } = await query(
+    `SELECT o.id, o.order_number, o.status, o.created_at, o.email, o.shipping_address,
+            o.tracking_number, o.tracking_url, o.payment_method, u.email AS user_email
+       FROM orders o LEFT JOIN users u ON u.id = o.user_id
+      WHERE UPPER(o.order_number) = $1`,
+    [number],
+  );
+  const addr = typeof o?.shipping_address === 'string' ? JSON.parse(o.shipping_address) : o?.shipping_address;
+  const matches = o && (contact.includes('@')
+    ? [o.email, o.user_email].some((e) => e && e.toLowerCase() === contact)
+    : lastDigits(contact).length === 9 && lastDigits(addr?.phone) === lastDigits(contact));
+  if (!matches) return res.status(404).json({ error: notFoundMsg });
+
+  const [{ rows: items }, { rows: history }] = await Promise.all([
+    query(`SELECT product_name, product_image, quantity, variant_description FROM order_items WHERE order_id = $1 ORDER BY id`, [o.id]),
+    query(`SELECT status, created_at FROM order_status_history WHERE order_id = $1 ORDER BY created_at, id`, [o.id]),
+  ]);
+  res.json({
+    order_number: o.order_number,
+    status: o.status,
+    placed_at: o.created_at,
+    city: addr?.city || null,
+    region: addr?.state || null,
+    payment_method: o.payment_method,
+    tracking_number: o.tracking_number || null,
+    tracking_url: o.tracking_url || null,
+    items,
+    history,
+  });
+}));
+
 // GET /api/orders/user/me
 router.get('/user/me', requireAuth, viewAsMiddleware, asyncHandler(async (req, res) => {
   const userId = req.viewAs?.user_id ?? req.user.id;
@@ -389,7 +440,8 @@ router.get('/:id/receipt.pdf', requireAuth, asyncHandler(async (req, res) => {
     'SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1',
     [order.id]
   );
-  const couponDiscount = couponRows[0] ? Number(couponRows[0].discount_amount) : 0;
+  const couponDiscount = (couponRows[0] ? Number(couponRows[0].discount_amount) : 0)
+    + Number(order.bundle_discount_ghs || 0);
 
   let user = null;
   if (order.user_id) {

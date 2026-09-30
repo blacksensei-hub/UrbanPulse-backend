@@ -22,6 +22,7 @@ import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
 import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
 import { logger } from '../utils/logger.js';
 import { normalizeCategory } from '../utils/category.js';
+import { notifyBackInStock, isMissingTable } from '../utils/stockAlerts.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -30,6 +31,60 @@ const upload = multer({
 
 const router = express.Router();
 router.use(adminLimiter, requireAuth, requireAdmin);
+
+// Back-in-stock alerts go out after any successful admin change, instead of
+// being wired into each of the ~10 places stock can change (edits,
+// adjustments, CSV import, return restocks, pre-order release): no path can
+// be missed. When nobody is waiting it's one indexed query. The response is
+// sent once the check finishes.
+router.use((req, res, next) => {
+  if (req.method === 'GET') return next();
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode >= 400) return json(body);
+    notifyBackInStock()
+      .catch((err) => logger.error('back-in-stock check failed', { err: err.message }))
+      .finally(() => json(body));
+    return res;
+  };
+  next();
+});
+
+// Size chart from the admin form, reduced to a small, predictable shape:
+// { unit, columns: [..], rows: [[..]], note }. Anything unusable → null.
+function cleanSizeChart(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const cell = (v) => String(v ?? '').trim().slice(0, 24);
+  const columns = (Array.isArray(raw.columns) ? raw.columns : []).map(cell).filter(Boolean).slice(0, 8);
+  if (columns.length < 2) return null;
+  const rows = (Array.isArray(raw.rows) ? raw.rows : [])
+    .map((r) => columns.map((_, i) => cell(Array.isArray(r) ? r[i] : '')))
+    .filter((r) => r[0])
+    .slice(0, 30);
+  if (!rows.length) return null;
+  return {
+    unit: raw.unit === 'in' ? 'in' : 'cm',
+    columns,
+    rows,
+    note: String(raw.note ?? '').trim().slice(0, 280) || null,
+  };
+}
+
+// Saved only when the form sends it, so products work unchanged until the
+// October migration adds the columns.
+async function saveSizeChart(productId, p, row) {
+  if (!('size_chart' in p) && !('fit_note' in p)) return;
+  const chart = cleanSizeChart(p.size_chart);
+  const fit = String(p.fit_note ?? '').trim().slice(0, 200) || null;
+  try {
+    await query('UPDATE products SET size_chart = $1, fit_note = $2 WHERE id = $3', [chart, fit, productId]);
+  } catch (err) {
+    if (isMissingTable(err)) throw badRequest('Size charts need the database update in backend/sql/2026-10_features.sql. The rest of the product was saved.');
+    throw err;
+  }
+  row.size_chart = chart;
+  row.fit_note = fit;
+}
 
 const jobLastRun = new Map();
 function checkJobCooldown(jobId) {
@@ -211,6 +266,7 @@ router.post(
         );
       }
     }
+    await saveSizeChart(product.id, p, product);
     await logAdminAction(req.user.id, 'product.create', { id: product.id }, req.ip);
     res.status(201).json(product);
   })
@@ -269,6 +325,7 @@ router.put('/products/:id', asyncHandler(async (req, res) => {
       }
     }
   }
+  await saveSizeChart(rows[0].id, p, rows[0]);
   await logAdminAction(req.user.id, 'product.update', { id: rows[0].id }, req.ip);
   res.json(rows[0]);
 }));
@@ -2655,7 +2712,8 @@ router.post('/customers/:id/resend-confirmation', asyncHandler(async (req, res) 
     'SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1',
     [order.id]
   );
-  const couponDiscount = couponRows[0] ? Number(couponRows[0].discount_amount) : 0;
+  const couponDiscount = (couponRows[0] ? Number(couponRows[0].discount_amount) : 0)
+    + Number(order.bundle_discount_ghs || 0);
   const cfg = await getSettings();
   const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
   const tpl = emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs });
@@ -2700,6 +2758,49 @@ router.post('/customers/:id/reset-password', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ───────── Back-in-stock: who's waiting ─────────
+// { variant_id: count } of people waiting per size, for the product form.
+router.get('/products/:id(\\d+)/stock-alerts', asyncHandler(async (req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT variant_id, COUNT(*)::int AS waiting FROM stock_alerts
+        WHERE product_id = $1 AND notified_at IS NULL GROUP BY variant_id`,
+      [req.params.id],
+    );
+    res.json(Object.fromEntries(rows.map((r) => [r.variant_id, r.waiting])));
+  } catch (err) {
+    if (isMissingTable(err)) return res.json({});
+    throw err;
+  }
+}));
+
+// ───────── Visitors (anonymous daily counts) ─────────
+router.get('/visitors', asyncHandler(async (req, res) => {
+  const days = Math.min(90, Math.max(1, Number(req.query.days) || 30));
+  const since = `NOW()::date - ($1::int - 1)`;
+  try {
+    const [daily, pages, sources, devices, totals] = await Promise.all([
+      query(`SELECT day, SUM(views)::int AS views, SUM(landings)::int AS visits
+               FROM visit_stats WHERE day >= ${since} GROUP BY day ORDER BY day`, [days]),
+      query(`SELECT path, SUM(views)::int AS views FROM visit_stats
+              WHERE day >= ${since} GROUP BY path ORDER BY views DESC LIMIT 10`, [days]),
+      query(`SELECT CASE WHEN source = '' THEN 'direct' ELSE source END AS source,
+                    NULLIF(medium, '') AS medium, NULLIF(campaign, '') AS campaign,
+                    SUM(landings)::int AS visits
+               FROM visit_stats WHERE day >= ${since} AND landings > 0
+              GROUP BY 1, 2, 3 ORDER BY visits DESC LIMIT 12`, [days]),
+      query(`SELECT device, SUM(landings)::int AS visits FROM visit_stats
+              WHERE day >= ${since} GROUP BY device ORDER BY visits DESC`, [days]),
+      query(`SELECT COALESCE(SUM(views),0)::int AS views, COALESCE(SUM(landings),0)::int AS visits
+               FROM visit_stats WHERE day >= ${since}`, [days]),
+    ]);
+    res.json({ days, enabled: true, totals: totals.rows[0], daily: daily.rows, pages: pages.rows, sources: sources.rows, devices: devices.rows });
+  } catch (err) {
+    if (isMissingTable(err)) return res.json({ days, enabled: false });
+    throw err;
+  }
+}));
+
 // ───────── Settings ─────────
 router.get('/settings', asyncHandler(async (_req, res) => {
   const settings = await getSettings();
@@ -2711,7 +2812,18 @@ router.get('/settings', asyncHandler(async (_req, res) => {
 router.put('/settings', asyncHandler(async (req, res) => {
   const { key, value, description } = req.body;
   if (!key || value === undefined || value === null) throw badRequest('key and value are required');
-  const val = typeof value === 'string' ? value : JSON.stringify(value);
+  // value is a jsonb column. Strings that are already JSON ('30', 'true',
+  // '{"a":1}') keep their meaning; plain text ('UrbanPulse', an email
+  // address, '024 123 4567') is stored as a JSON string. Plain text used to
+  // go in raw and fail with "invalid input syntax for type json", so no text
+  // setting (store name, support email, WhatsApp, address, maintenance
+  // message) could be saved from admin.
+  let val;
+  if (typeof value === 'string') {
+    try { JSON.parse(value); val = value; } catch { val = JSON.stringify(value); }
+  } else {
+    val = JSON.stringify(value);
+  }
   await query(
     `INSERT INTO site_settings (key, value, description, updated_at)
      VALUES ($1, $2, $3, NOW())
