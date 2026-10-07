@@ -7,7 +7,7 @@ import { generateReceiptPDF } from '../utils/receipt.js';
 import { getSettings } from '../utils/settingsCache.js';
 import { redeemPoints } from '../utils/loyalty.js';
 import { logger } from '../utils/logger.js';
-import { shippingFor, bundleDiscount } from '../utils/pricing.js';
+import { shippingFor, bundleDiscount, orderTotals } from '../utils/pricing.js';
 import { lookupLimiter } from '../utils/rateLimiter.js';
 
 async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId }) {
@@ -125,11 +125,9 @@ router.post(
 
       const subtotal = items.rows.reduce((s, it) => s + Number(it.price) * it.quantity, 0);
       const cfg = await getSettings();
-      const taxRate    = Number(cfg.tax_rate_percent         ?? 12.5) / 100;
       // Delivery by region (utils/pricing.js); identical to the old flat
       // rule while region pricing is off.
       const shipping = shippingFor({ subtotal, method: shipping_method, region: shipping_address?.state, settings: cfg });
-      const tax = +(subtotal * taxRate).toFixed(2);
       // Bundle saving, applied before coupon/credit/points and recorded on
       // the order so receipts and emails show it as a discount.
       const bundle = bundleDiscount(items.rows, cfg);
@@ -153,42 +151,42 @@ router.post(
         couponId = result.couponId;
       }
 
-      // Apply store credit (server-side authoritative)
-      let creditApplied = 0;
+      // Store credit and loyalty points are only a signed-in customer's, read
+      // fresh here. Tax, credit, points and the total come from orderTotals in
+      // utils/pricing.js, the same function the checkout page shows, applied
+      // coupon → store credit → points. Points are only calculated here; the
+      // balance changes via redeemPoints() once the order row exists.
+      let creditAvailable = 0;
       if (req.user && Number(apply_store_credit_ghs) > 0) {
         const { rows: [creditRow] } = await c.query(
           'SELECT store_credit_ghs AS bal FROM users WHERE id = $1',
           [req.user.id]
         );
-        const available = Number(creditRow?.bal ?? 0);
-        const maxApplicable = +(subtotal + shipping + tax - bundle.discount - discount).toFixed(2);
-        creditApplied = +Math.min(Number(apply_store_credit_ghs), available, maxApplicable).toFixed(2);
-        creditApplied = Math.max(0, creditApplied);
+        creditAvailable = Number(creditRow?.bal ?? 0);
       }
-
-      // Apply loyalty points (server-side authoritative, applied after coupon + credit —
-      // stacking precedence: coupon → store credit → points). This block is calculation-only;
-      // the actual balance mutation happens via redeemPoints() after the order row exists.
-      let pointsRedeemed = 0;
-      let pointsCediValue = 0;
-      if (req.user && Number(apply_loyalty_points) > 0 && cfg.feature_loyalty !== 'false' && cfg.feature_loyalty !== false) {
+      const loyaltyOn = Boolean(req.user) && Number(apply_loyalty_points) > 0
+        && cfg.feature_loyalty !== 'false' && cfg.feature_loyalty !== false;
+      let pointsBalance = 0;
+      if (loyaltyOn) {
         const { rows: [loyaltyRow] } = await c.query(
           'SELECT loyalty_points AS bal FROM users WHERE id = $1',
           [req.user.id]
         );
-        const pointsBalance = Number(loyaltyRow?.bal ?? 0);
-        const minRedeemPoints = Number(cfg.loyalty_min_redeem_points ?? 100);
-        const redeemRateGhs = Number(cfg.loyalty_redeem_rate_ghs ?? 0.1);
-        const preLoyaltyTotal = +(subtotal + shipping + tax - bundle.discount - discount - creditApplied).toFixed(2);
-        const maxByTotal = Math.floor(preLoyaltyTotal / redeemRateGhs);
-
-        pointsRedeemed = Math.min(Math.floor(Number(apply_loyalty_points)), pointsBalance, maxByTotal);
-        pointsRedeemed = Math.max(0, pointsRedeemed);
-        if (pointsRedeemed > 0 && pointsRedeemed < minRedeemPoints) pointsRedeemed = 0; // below minimum → redeem nothing, no error
-        pointsCediValue = +(pointsRedeemed * redeemRateGhs).toFixed(2);
+        pointsBalance = Number(loyaltyRow?.bal ?? 0);
       }
-
-      const total = +(subtotal + shipping + tax - bundle.discount - discount - creditApplied - pointsCediValue).toFixed(2);
+      const totals = orderTotals({
+        subtotal, shipping,
+        bundleDiscount: bundle.discount,
+        couponDiscount: discount,
+        taxRatePercent: cfg.tax_rate_percent ?? 12.5,
+        creditRequested: creditAvailable > 0 ? apply_store_credit_ghs : 0,
+        creditAvailable,
+        pointsRequested: loyaltyOn ? apply_loyalty_points : 0,
+        pointsBalance,
+        minRedeemPoints: cfg.loyalty_min_redeem_points ?? 100,
+        redeemRateGhs: cfg.loyalty_redeem_rate_ghs ?? 0.1,
+      });
+      const { tax, credit: creditApplied, points: pointsRedeemed, total } = totals;
       const orderNumber = generateOrderNumber();
 
       const orderStatus = payment_method === 'cod' ? 'awaiting_confirmation' : 'pending';

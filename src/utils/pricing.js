@@ -1,7 +1,8 @@
 // Order pricing rules that the checkout page also shows before you pay.
 // MIRRORED in frontend/src/lib/pricing.js: change both together, or the
-// total a customer sees won't be the total they're charged.
-// (review/pricing-parity.mjs checks the two agree.)
+// total a customer sees won't be the total they're charged. The storefront's
+// CI checks its copy matches this file below these header comments, so change
+// this one first, then the storefront's.
 
 export const GHANA_REGIONS = [
   'Greater Accra', 'Ashanti', 'Central', 'Eastern', 'Western', 'Western North',
@@ -99,4 +100,36 @@ export function bundleDiscount(items, settings = {}) {
   const discount = +lines.reduce((s, l) => s + l.saving, 0).toFixed(2);
   const note = lines.length ? lines.map((l) => (l.sets > 1 ? `${l.name} ×${l.sets}` : l.name)).join(', ') : null;
   return { discount, lines, note };
+}
+
+/**
+ * Everything after the items, delivery, bundle saving and coupon: tax, store
+ * credit and loyalty points, applied in that order (coupon → store credit →
+ * points) and rounded to pesewas at each step, exactly as an order is
+ * charged. The checkout page calls the same function, so the total it shows
+ * is the total charged.
+ *
+ * Pass 0 for credit or points the customer isn't using (a guest, or loyalty
+ * switched off). Fewer points than the minimum redeem nothing.
+ *
+ * → { tax, credit, points, pointsGhs, maxPoints, total }
+ *   maxPoints: the most points this order could take, for the checkout slider.
+ */
+export function orderTotals({
+  subtotal, shipping, bundleDiscount: bundle = 0, couponDiscount = 0, taxRatePercent = 12.5,
+  creditRequested = 0, creditAvailable = 0,
+  pointsRequested = 0, pointsBalance = 0, minRedeemPoints = 100, redeemRateGhs = 0.1,
+}) {
+  const money = (v) => +Number(v).toFixed(2);
+  const tax = money(subtotal * (Number(taxRatePercent) / 100));
+  const beforeCredit = money(subtotal + shipping + tax - bundle - couponDiscount);
+  const credit = Math.max(0, money(Math.min(Number(creditRequested) || 0, Number(creditAvailable) || 0, beforeCredit)));
+  const beforePoints = money(subtotal + shipping + tax - bundle - couponDiscount - credit);
+  const rate = Number(redeemRateGhs);
+  const maxPoints = Math.max(0, Math.min(Number(pointsBalance) || 0, Math.floor(beforePoints / rate)));
+  let points = Math.max(0, Math.min(Math.floor(Number(pointsRequested) || 0), maxPoints));
+  if (points > 0 && points < Number(minRedeemPoints)) points = 0;
+  const pointsGhs = money(points * rate);
+  const total = money(subtotal + shipping + tax - bundle - couponDiscount - credit - pointsGhs);
+  return { tax, credit, points, pointsGhs, maxPoints, total };
 }
