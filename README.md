@@ -96,7 +96,19 @@ SEED_WIPE=yes SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD='at least 12 
 
 ```bash
 npm run lint       # ESLint's recommended rules (eslint.config.js)
-npm test           # pricing checks: delivery rates and bundle discounts
+npm test           # pricing checks, then the checkout tests in test/
 ```
 
-GitHub Actions runs both on every pull request, along with a syntax check of every source file (`.github/workflows/ci.yml`).
+The checkout tests (`test/checkout.test.js`) go through the real order, checkout and webhook routes:
+- order totals, coupons and store credit
+- stock, including two customers buying the last unit at once
+- starting a Paystack payment
+- the webhook and the return check that mark an order paid
+
+Each run builds a throwaway database from `sql/schema.sql` and drops it afterwards. Paystack is replaced by a stand-in, and email and SMS are off. The tests run only when `TEST_DATABASE_URL` points at a PostgreSQL server on this machine; they refuse any other host, so they can't reach the live database:
+
+```bash
+TEST_DATABASE_URL=postgres://postgres:yourpassword@localhost:5432/postgres npm test
+```
+
+GitHub Actions runs all of it on every pull request, with PostgreSQL in a container, along with a syntax check of every source file (`.github/workflows/ci.yml`).
