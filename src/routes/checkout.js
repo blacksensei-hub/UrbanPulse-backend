@@ -1,11 +1,11 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
-import { query, tx } from '../db/index.js';
+import { query } from '../db/index.js';
 import { asyncHandler, badRequest, notFound } from '../utils/helpers.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { initializeTransaction, verifyTransaction } from '../utils/paystackHelper.js';
 import { requireFeature } from '../utils/settingsCache.js';
-import { awardPointsForOrder } from '../utils/loyalty.js';
+import { confirmPayment } from '../utils/payments.js';
 
 const router = express.Router();
 
@@ -35,7 +35,10 @@ router.post(
     const { order_id, payment_method } = req.body;
     const { rows } = await query('SELECT * FROM orders WHERE id = $1', [order_id]);
     const order = rows[0];
-    if (!order) throw notFound('Order');
+    // A signed-in customer's order is theirs alone to pay: starting a payment
+    // gives the order a new reference. (Guest orders have no owner to check;
+    // a payment is still matched to its order by id, see utils/payments.js.)
+    if (!order || (order.user_id && order.user_id !== req.user?.id)) throw notFound('Order');
     if (order.payment_method === 'cod') throw badRequest('COD orders do not need a Paystack session');
     if (order.payment_status === 'paid') throw badRequest('Already paid');
 
@@ -91,24 +94,13 @@ router.post(
   })
 );
 
-// GET /api/checkout/verify/:reference — fallback for clients that land on the callback
-// before the webhook has fired. Idempotent: just marks the order paid if Paystack confirms it.
+// GET /api/checkout/verify/:reference — for customers who land on the callback
+// before the webhook has fired. Asks Paystack, then confirms exactly as the
+// webhook would (history, points, email, SMS, referral), so whichever comes
+// first does it all and the other does nothing.
 router.get('/verify/:reference', asyncHandler(async (req, res) => {
   const data = await verifyTransaction(req.params.reference);
-  if (data?.status === 'success') {
-    await tx(async (c) => {
-      const { rows } = await c.query(
-        `UPDATE orders
-           SET payment_status = 'paid', status = 'processing'
-         WHERE paystack_reference = $1
-           AND payment_status <> 'paid'
-         RETURNING *`,
-        [req.params.reference]
-      );
-      const order = rows[0];
-      if (order) await awardPointsForOrder(c, order);
-    });
-  }
+  if (data?.status === 'success') await confirmPayment(req.params.reference, data);
   res.json({ status: data?.status, reference: data?.reference });
 }));
 

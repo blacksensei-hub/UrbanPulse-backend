@@ -9,7 +9,7 @@
     "start": "node src/server.js",
     "seed": "node src/db/seed.js",
     "lint": "eslint .",
-    "test": "node scripts-test-pricing.mjs"
+    "test": "node scripts-test-pricing.mjs && node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "@sentry/node": "^10.54.0",

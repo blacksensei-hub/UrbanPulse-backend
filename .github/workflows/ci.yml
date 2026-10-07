@@ -1,5 +1,7 @@
 # Checks every pull request and every push to master: lint, a syntax check
-# of every source file, and the pricing checks. Nothing here deploys.
+# of every source file, the pricing checks, and the checkout tests against a
+# throwaway PostgreSQL in a container (test/support/testdb.js). Nothing here
+# deploys, and nothing here can reach the live database.
 name: ci
 
 on:
@@ -18,6 +20,16 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

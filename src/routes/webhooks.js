@@ -1,12 +1,7 @@
 import express from 'express';
 import { verifyWebhookSignature } from '../utils/paystackHelper.js';
-import { tx, query } from '../db/index.js';
-import { sendEmail, emailTemplates } from '../utils/email.js';
-import { sendSMS, smsTemplates } from '../utils/sms.js';
 import { logger } from '../utils/logger.js';
-import { checkAndQualifyReferral } from '../utils/referral.js';
-import { awardPointsForOrder } from '../utils/loyalty.js';
-import { getSettings } from '../utils/settingsCache.js';
+import { confirmPayment } from '../utils/payments.js';
 
 const router = express.Router();
 
@@ -37,59 +32,10 @@ router.post('/paystack', async (req, res) => {
   // non-2xx, which wouldn't fix a code bug anyway) — but only after doing the work, or
   // after logging loudly why it failed.
   try {
+    // Marks the order paid only for a full payment in cedis, matched to the
+    // order even if its payment page was opened twice (utils/payments.js).
     if (event?.event === 'charge.success' && event?.data?.reference) {
-      const reference = event.data.reference;
-      const order = await tx(async (c) => {
-        const { rows } = await c.query(
-          `UPDATE orders
-              SET payment_status = 'paid', status = 'processing'
-            WHERE paystack_reference = $1
-              AND payment_status <> 'paid'
-            RETURNING *`,
-          [reference]
-        );
-        const ord = rows[0];
-        if (ord) {
-          await c.query(
-            'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-            [ord.id, 'paid', 'Payment confirmed via Paystack']
-          );
-          await c.query(
-            'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-            [ord.id, 'processing', null]
-          );
-          await awardPointsForOrder(c, ord);
-        }
-        return ord;
-      });
-      if (order) {
-        const email = order.email || order.shipping_address?.email;
-        const phone = order.phone || order.shipping_address?.phone;
-        if (email) {
-          const { rows: items } = await query(
-            'SELECT product_name, unit_price, variant_description, product_image, quantity FROM order_items WHERE order_id = $1',
-            [order.id]
-          );
-          const { rows: couponRows } = await query(
-            'SELECT discount_amount FROM order_coupons WHERE order_id = $1 LIMIT 1',
-            [order.id]
-          );
-          // Bundle saving included, or the email would show it as store credit.
-          const couponDiscount = (couponRows[0] ? Number(couponRows[0].discount_amount) : 0)
-            + Number(order.bundle_discount_ghs || 0);
-          const cfg = await getSettings();
-          const expressRateGhs = Number(cfg.shipping_express_ghs ?? 80);
-          await sendEmail({ to: email, ...emailTemplates.orderConfirmation(order, items, { couponDiscount, expressRateGhs, taxRatePercent: cfg.tax_rate_percent }) })
-            .catch((err) => logger.error('Order confirmation email failed', { orderId: order.id, err: err.message }));
-        }
-        if (phone) {
-          await sendSMS({ to: phone, message: smsTemplates.paid(order) })
-            .catch((err) => logger.error('Order confirmation SMS failed', { orderId: order.id, err: err.message }));
-        }
-        await checkAndQualifyReferral(order.id, order.user_id).catch((err) =>
-          logger.error(`Referral qualify error (order ${order.id}): ${err.message}`)
-        );
-      }
+      await confirmPayment(event.data.reference, event.data);
     }
   } catch (err) {
     logger.error('Paystack webhook handling error', {

@@ -53,6 +53,8 @@ async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId 
   return { discount, couponId: cpRow.id, type: cpRow.type, value: cpRow.value, label };
 }
 
+const featureDisabled = () => Object.assign(new Error('This feature is currently disabled'), { status: 503 });
+
 const router = express.Router();
 
 // POST /api/orders/preview  — validate coupon without creating an order
@@ -136,11 +138,11 @@ router.post(
       // boolean, not the string 'false', so both forms must be checked (see
       // the feature_loyalty check below, and requireFeature() in settingsCache.js).
       if (payment_method === 'cod' && (cfg.feature_cod === 'false' || cfg.feature_cod === false)) {
-        return res.status(503).json({ error: 'This feature is currently disabled' });
+        throw featureDisabled();
       }
       const hasPreorder = items.rows.some(it => it.is_preorder);
       if (hasPreorder && (cfg.feature_preorders === 'false' || cfg.feature_preorders === false)) {
-        return res.status(503).json({ error: 'This feature is currently disabled' });
+        throw featureDisabled();
       }
 
       let discount = 0;
@@ -277,7 +279,13 @@ router.post(
           );
         } else {
           // ── Normal: stock check + decrement ─────────────────────────────────
-          if (it.stock < it.quantity) throw badRequest(`Out of stock: ${it.name}`);
+          // Taken in one conditional update: two orders for the last unit
+          // can't both pass a check made on a stock figure read earlier.
+          const took = await c.query(
+            'UPDATE product_variants SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock',
+            [it.quantity, it.variant_id]
+          );
+          if (!took.rows.length) throw badRequest(`Out of stock: ${it.name}`);
           await c.query(
             `INSERT INTO order_items
               (order_id, product_name, product_image, quantity, unit_price,
@@ -285,10 +293,6 @@ router.post(
              VALUES ($1,$2,$3,$4,$5,$6,$7)`,
             [orderId, it.name, it.images?.[0] ?? null, it.quantity, it.price,
              `${it.size ?? ''} / ${it.color ?? ''}`.trim(), it.variant_id]
-          );
-          await c.query(
-            'UPDATE product_variants SET stock = stock - $1 WHERE id = $2',
-            [it.quantity, it.variant_id]
           );
         }
       }
@@ -305,7 +309,15 @@ router.post(
           'INSERT INTO order_coupons (order_id, coupon_id, discount_amount) VALUES ($1,$2,$3)',
           [orderId, couponId, discount]
         );
-        await c.query('UPDATE coupons SET used_count = used_count + 1 WHERE id = $1', [couponId]);
+        // Counted in one conditional update, so two orders can't both take
+        // a coupon's last use. (A limit of 0 means no limit, as above.)
+        const counted = await c.query(
+          `UPDATE coupons SET used_count = used_count + 1
+            WHERE id = $1 AND (usage_limit IS NULL OR usage_limit = 0 OR used_count < usage_limit)
+            RETURNING id`,
+          [couponId]
+        );
+        if (!counted.rows.length) throw badRequest('Coupon usage limit reached');
       }
 
       // Deduct store credit atomically with the order
