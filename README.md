@@ -92,6 +92,14 @@ SEED_WIPE=yes SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD='at least 12 
 
 `node scripts-seed-dev.mjs` adds three sample products (their slugs start with `dev-`) for trying the store locally.
 
+## Finding payments that went astray
+
+`node scripts-find-unpaid-payments.mjs` lists two kinds of Paystack order from before the October 2026 checkout fixes:
+- orders Paystack was paid for that still show unpaid;
+- paid orders that were never confirmed, which likely got no email or SMS.
+
+It reads `DATABASE_URL` and `PAYSTACK_SECRET_KEY` from `.env` and changes nothing. The database is opened read-only, and Paystack is only asked to list payments. `--days 365` looks further back than the default 120 days.
+
 ## Checks
 
 ```bash
