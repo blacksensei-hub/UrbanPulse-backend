@@ -87,7 +87,8 @@ SEED_WIPE=yes SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD='at least 12 
 ## Checks
 
 ```bash
+npm run lint       # ESLint's recommended rules (eslint.config.js)
 npm test           # pricing checks: delivery rates and bundle discounts
 ```
 
-GitHub Actions runs those checks on every pull request, along with a syntax check of every source file (`.github/workflows/ci.yml`). ESLint is listed in `package.json` but has no config yet, so `npm run lint` doesn't work.
+GitHub Actions runs both on every pull request, along with a syntax check of every source file (`.github/workflows/ci.yml`).

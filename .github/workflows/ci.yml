@@ -1,7 +1,5 @@
-# Checks every pull request and every push to master: the pricing checks,
-# and a syntax check of every source file. Nothing here deploys.
-#
-# Lint isn't run: ESLint is installed but has no config yet.
+# Checks every pull request and every push to master: lint, a syntax check
+# of every source file, and the pricing checks. Nothing here deploys.
 name: ci
 
 on:
@@ -27,6 +25,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - name: Syntax check
         run: |
           for f in $(git ls-files 'src/*.js' '*.mjs'); do
