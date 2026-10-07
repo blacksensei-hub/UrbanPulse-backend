@@ -66,9 +66,17 @@ Put these in `.env`. Only the first group is needed to start; the rest switch fe
 
 ### Database
 
-This repo doesn't yet have a file that creates the base tables: the live database was built directly. To run locally, restore a schema-only copy of an existing UrbanPulse database (for example with `pg_dump --schema-only`). Then apply the files in `sql/`:
+`sql/schema.sql` creates every table, index and constraint, with no data. It also creates the `pg_trgm` extension, which ships with PostgreSQL. Load it into an empty database:
 
-- `2026-10_features.sql` and `2026-10_drops.sql` add the tables and columns for restock alerts, bundles, visit stats, size charts and the drop list. Run them before the code that uses them.
+```bash
+createdb urbanpulse
+psql urbanpulse -v ON_ERROR_STOP=1 -f sql/schema.sql
+psql urbanpulse -f sql/seed_content_pages.sql
+```
+
+The other files in `sql/` are changes for databases made before them:
+
+- `2026-10_features.sql` and `2026-10_drops.sql` add the tables and columns for restock alerts, bundles, visit stats, size charts and the drop list. `schema.sql` already includes them, and running them again changes nothing.
 - `seed_content_pages.sql` and the `update_*` files set the About, FAQ and policy page copy and the support address.
 - `normalize_category.sql` tidies category names.
 
