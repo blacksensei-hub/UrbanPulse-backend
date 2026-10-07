@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "seed": "node src/db/seed.js",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "test": "node scripts-test-pricing.mjs"
   },
   "dependencies": {
     "@sentry/node": "^10.54.0",

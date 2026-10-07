@@ -1,0 +1,93 @@
+# UrbanPulse API
+
+The backend for [UrbanPulse](https://urbanpulsee.vercel.app), a storefront for a Ghanaian streetwear brand. It handles accounts, products, carts, checkout in cedis through Paystack, orders and returns, the drop list, loyalty and referrals, and the admin that runs the shop.
+
+The storefront lives in [UrbanPulse-frontend](https://github.com/blacksensei-hub/UrbanPulse-frontend). The [case study](https://jeffrey-ankrah.pages.dev/projects/urbanpulse/) explains the decisions behind both.
+
+## What it does
+
+- **Checkout:** mobile money and card through Paystack, plus cash on delivery. A payment webhook marks an order paid only after its signature checks out. Delivery can be priced per region, and bundle discounts are worked out on the server.
+- **Keeping the sale:** back-in-stock alerts by email or SMS, a drop list with batched announcements and unsubscribe links, and order tracking with just an order number and an email or phone number.
+- **Customer accounts:**
+  - order history, returns, saved addresses and a wishlist
+  - PDF receipts
+  - optional two-factor sign-in, and Google sign-in
+  - loyalty tiers and referral credit
+  - exporting your data, or deleting your account
+- **Admin:**
+  - orders, products, customers, coupons and returns
+  - the drop list, content pages and email templates
+  - analytics and activity logs
+  - settings for delivery rates, bundles and loyalty
+- **Housekeeping:**
+  - visit counts kept as daily totals, with no IP addresses or cookies
+  - a sitemap
+  - scheduled jobs for abandoned carts and loyalty expiry, each switched on by its own setting
+
+## Stack
+
+Node.js and Express on PostgreSQL (`pg`). The API also uses:
+- Paystack for payments, Cloudinary for images
+- Nodemailer for email, Arkesel for SMS
+- PDFKit for receipts, otplib for two-factor sign-in
+- node-cron for scheduled jobs
+- Sentry for errors, Winston for logs
+
+## Running it locally
+
+You need Node.js 18 or later and PostgreSQL.
+
+```bash
+npm install
+npm run dev        # http://localhost:5000
+```
+
+### Settings
+
+Put these in `.env`. Only the first group is needed to start; the rest switch features on.
+
+| Variable | What it's for |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string. SSL is used only when `NODE_ENV=production` |
+| `JWT_SECRET`, `JWT_REFRESH_SECRET` | Sign the sign-in and refresh tokens. Long random strings |
+| `FRONTEND_URL` | Where the storefront runs, for example `http://localhost:5173`. Used for CORS and for links in emails |
+| `PORT` | Defaults to `5000` |
+| `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | Token lifetimes. Default `15m` and `7d` |
+| `PAYSTACK_SECRET_KEY` | Paystack payments and webhooks. Use a test key locally |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Product image uploads from the admin |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Sending email. Without `SMTP_HOST`, emails are logged instead of sent |
+| `SMS_API_KEY`, `SMS_SENDER_ID`, `SMS_BASE_URL` | Sending SMS through Arkesel. Without a key, SMS is off |
+| `GOOGLE_CLIENT_ID` | Google sign-in |
+| `BACKEND_URL` | The API's public address, used in unsubscribe links |
+| `ADMIN_EMAIL` | Where return requests are sent. Defaults to `SMTP_FROM` |
+| `RETURN_ADDRESS` | The return address printed in return emails |
+| `ENABLE_CART_RECOVERY`, `ENABLE_LOYALTY_EXPIRY` | Set to `true` to run those scheduled jobs |
+| `SENTRY_DSN`, `LOG_LEVEL` | Error reporting, and log detail (default `info`) |
+
+### Database
+
+This repo doesn't yet have a file that creates the base tables: the live database was built directly. To run locally, restore a schema-only copy of an existing UrbanPulse database (for example with `pg_dump --schema-only`). Then apply the files in `sql/`:
+
+- `2026-10_features.sql` and `2026-10_drops.sql` add the tables and columns for restock alerts, bundles, visit stats, size charts and the drop list. Run them before the code that uses them.
+- `seed_content_pages.sql` and the `update_*` files set the About, FAQ and policy page copy and the support address.
+- `normalize_category.sql` tidies category names.
+
+Each file says at the top whether it is safe to run more than once.
+
+### Seeding
+
+`npm run seed` **empties every store table** (products, orders, customers, everything) and creates one admin account, so only use it on a database you can wipe. It needs:
+
+```bash
+SEED_WIPE=yes SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD='at least 12 characters' npm run seed
+```
+
+`node scripts-seed-dev.mjs` adds three sample products (their slugs start with `dev-`) for trying the store locally.
+
+## Checks
+
+```bash
+npm test           # pricing checks: delivery rates and bundle discounts
+```
+
+GitHub Actions runs those checks on every pull request, along with a syntax check of every source file (`.github/workflows/ci.yml`). ESLint is listed in `package.json` but has no config yet, so `npm run lint` doesn't work.
