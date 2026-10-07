@@ -10,7 +10,7 @@ import { logger } from '../utils/logger.js';
 import { shippingFor, bundleDiscount, orderTotals } from '../utils/pricing.js';
 import { lookupLimiter } from '../utils/rateLimiter.js';
 
-async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId }) {
+async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId, email }) {
   const cp = await queryFn.query(
     `SELECT id, type, value, min_order_amount, usage_limit, used_count,
             valid_from, valid_until, is_active, first_order_only,
@@ -31,9 +31,18 @@ async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId 
                              throw badRequest('Coupon usage limit reached');
   if (subtotal < Number(cpRow.min_order_amount))
                              throw badRequest('Order does not meet minimum amount');
-  if (cpRow.first_order_only && userId) {
+  // An earlier order is one that went through: paid (or since refunded), or
+  // cash on delivery not cancelled. A payment abandoned at Paystack doesn't
+  // count. Guests are matched by email, as are customers who once ordered
+  // as a guest, so a first-order coupon can't be reused by staying signed out.
+  if (cpRow.first_order_only && (userId || email)) {
     const prev = await queryFn.query(
-      `SELECT id FROM orders WHERE user_id = $1 LIMIT 1`, [userId]
+      `SELECT id FROM orders
+        WHERE (user_id = $1 OR LOWER(email) = LOWER($2))
+          AND (payment_status IN ('paid', 'refunded')
+               OR (payment_method = 'cod' AND status <> 'cancelled'))
+        LIMIT 1`,
+      [userId ?? null, email ?? null]
     );
     if (prev.rows.length > 0) throw badRequest('Coupon is valid for first orders only');
   }
@@ -66,7 +75,7 @@ router.post('/preview', optionalAuth, asyncHandler(async (req, res) => {
   const result = await resolveCoupon(
     { query: (sql, p) => query(sql, p) },
     coupon_code,
-    { subtotal, shipping, userId: req.user?.id ?? null }
+    { subtotal, shipping, userId: req.user?.id ?? null, email: req.user?.email ?? null }
   );
   res.json({
     valid: true,
@@ -146,7 +155,9 @@ router.post(
       let discount = 0;
       let couponId = null;
       if (coupon_code) {
-        const result = await resolveCoupon(c, coupon_code, { subtotal, shipping, userId: req.user?.id ?? null });
+        const result = await resolveCoupon(c, coupon_code, {
+          subtotal, shipping, userId: req.user?.id ?? null, email: email ?? req.user?.email ?? null,
+        });
         discount = result.discount;
         couponId = result.couponId;
       }

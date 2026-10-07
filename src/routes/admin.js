@@ -19,6 +19,7 @@ import { getSettings, invalidateSettings } from '../utils/settingsCache.js';
 import { runAbandonedCartJob } from '../jobs/abandonedCart.js';
 import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
 import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
+import { lockOrder, refundedSoFar, rollbackPreorderCount, returnCreditSpent, releaseUnpaidOrder } from '../utils/refunds.js';
 import { logger } from '../utils/logger.js';
 import { normalizeCategory } from '../utils/category.js';
 import { notifyBackInStock, isMissingTable } from '../utils/stockAlerts.js';
@@ -103,23 +104,6 @@ async function shippedTemplateFor(order) {
     trackingUrl: order.tracking_url,
     expressRateGhs: Number(cfg.shipping_express_ghs ?? 80),
   });
-}
-
-// Rolls back product.preorder_count for preorder items in an order; safe to call in any tx
-async function rollbackPreorderCount(client, orderId) {
-  const { rows } = await client.query(
-    `SELECT oi.quantity, pv.product_id
-     FROM order_items oi
-     JOIN product_variants pv ON pv.id = oi.variant_id
-     WHERE oi.order_id = $1 AND oi.is_preorder = true`,
-    [orderId]
-  );
-  for (const r of rows) {
-    await client.query(
-      'UPDATE products SET preorder_count = GREATEST(0, preorder_count - $1) WHERE id = $2',
-      [r.quantity, r.product_id]
-    );
-  }
 }
 
 // ───────── Dashboard ─────────
@@ -774,27 +758,35 @@ router.post(
     const { amount_ghs, method, reason } = req.body;
     const orderId = Number(req.params.id);
 
-    const { rows: [order] } = await query('SELECT * FROM orders WHERE id=$1', [orderId]);
-    if (!order) throw notFound('Order not found');
-
-    const { rows: [sums] } = await query(
-      `SELECT COALESCE(SUM((after_value->>'amount')::numeric), 0) AS already_refunded
-       FROM order_edits WHERE order_id=$1 AND field='manual_refund'`,
-      [orderId]
-    );
-    const remaining = Number(order.total) - Number(sums.already_refunded);
-    if (Number(amount_ghs) > remaining) {
-      throw badRequest(`Cannot refund ${amount_ghs} — only ${remaining.toFixed(2)} remaining`);
-    }
+    // Claimed first, with the order locked (utils/refunds.js): the cap counts
+    // refunds of every kind, and a second click waits here and then sees this one.
+    const { order, claimId } = await tx(async (client) => {
+      const order = await lockOrder(client, orderId);
+      if (!order) throw notFound('Order not found');
+      const remaining = Number(order.total) - await refundedSoFar(client, orderId);
+      if (Number(amount_ghs) > remaining + 0.001) {
+        throw badRequest(`Cannot refund ${amount_ghs} — only ${remaining.toFixed(2)} remaining`);
+      }
+      if (method === 'paystack' && !order.paystack_reference) throw badRequest('No Paystack reference on this order');
+      if (method === 'store_credit' && !order.user_id) throw badRequest('No user account on this order — cannot issue store credit');
+      const { rows: [claim] } = await client.query(
+        'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+        [orderId, 'manual_refund', { amount: 0 }, { amount: Number(amount_ghs), method }, reason, req.user.id]
+      );
+      return { order, claimId: claim.id };
+    });
 
     if (method === 'paystack') {
-      if (!order.paystack_reference) throw badRequest('No Paystack reference on this order');
-      await refundTransaction(order.paystack_reference, Number(amount_ghs));
+      try {
+        await refundTransaction(order.paystack_reference, Number(amount_ghs));
+      } catch (err) {
+        await query('DELETE FROM order_edits WHERE id = $1', [claimId]);
+        throw err;
+      }
     }
 
     await tx(async (client) => {
       if (method === 'store_credit') {
-        if (!order.user_id) throw badRequest('No user account on this order — cannot issue store credit');
         await client.query(
           'UPDATE users SET store_credit_ghs=store_credit_ghs+$1 WHERE id=$2',
           [amount_ghs, order.user_id]
@@ -804,10 +796,6 @@ router.post(
           [order.user_id, amount_ghs, 'manual_refund', orderId]
         );
       }
-      await client.query(
-        'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
-        [orderId, 'manual_refund', { amount: 0 }, { amount: Number(amount_ghs), method }, reason, req.user.id]
-      );
       await clawbackPointsForOrder(client, orderId);
     });
 
@@ -825,11 +813,15 @@ router.put(
     const errors = validationResult(req);
     if (!errors.isEmpty()) throw badRequest('Validation', errors.array());
     const updatedOrder = await tx(async (c) => {
-      if (req.body.status === 'cancelled') {
-        const { rows: [existing] } = await c.query('SELECT payment_status FROM orders WHERE id = $1', [req.params.id]);
-        if (existing?.payment_status === 'paid') {
-          throw badRequest('Cannot cancel a paid order — use Refund instead');
-        }
+      const existing = await lockOrder(c, req.params.id);
+      if (!existing) throw notFound();
+      if (req.body.status === 'cancelled' && existing.payment_status === 'paid') {
+        throw badRequest('Cannot cancel a paid order — use Refund instead');
+      }
+      // Cancelling gave the order's stock, credit and coupon use back, so
+      // reopening it here would sell stock it no longer holds.
+      if (existing.status === 'cancelled' && req.body.status !== 'cancelled') {
+        throw badRequest('A cancelled order cannot be reopened — place a new order instead');
       }
       // Only touches tracking_number when a value is actually provided — never
       // clears a previously-persisted one on an unrelated status change.
@@ -848,6 +840,12 @@ router.put(
         'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
         [ord.id, ord.status, req.body.note ?? null]
       );
+      // An order cancelled before it was paid (an abandoned Paystack payment,
+      // say) gives back what placing it took: stock, credit and coupon use.
+      if (ord.status === 'cancelled' && !['cancelled', 'refunded'].includes(existing.status)
+          && !['paid', 'refunded'].includes(existing.payment_status)) {
+        await releaseUnpaidOrder(c, existing);
+      }
       // `payment_status` isn't touched by this UPDATE, so `ord.payment_status` here is still
       // the pre-update value — safe to use directly as the "was this a paid order" check.
       if (['cancelled', 'refunded'].includes(ord.status) && ord.payment_status === 'paid') {
@@ -875,58 +873,62 @@ router.put(
 );
 
 router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
-  const { rows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  const order = rows[0];
-  if (!order) throw notFound('Order');
-  if (order.payment_status !== 'paid') throw badRequest('Order is not in paid status');
-  if (!order.paystack_reference) throw badRequest('No payment reference on record');
+  // Claimed first, with the order locked (utils/refunds.js), so a second
+  // click waits and then finds it refunded. The amount is what's left after
+  // any earlier refunds: Paystack refuses a whole-transaction refund once
+  // part of it has gone back.
+  const { order, amount, claimId } = await tx(async (c) => {
+    const order = await lockOrder(c, req.params.id);
+    if (!order) throw notFound('Order');
+    if (order.payment_status !== 'paid') throw badRequest('Order is not in paid status');
+    if (!order.paystack_reference) throw badRequest('No payment reference on record');
+    const amount = +(Number(order.total) - await refundedSoFar(c, order.id)).toFixed(2);
+    if (amount <= 0) throw badRequest('This order has already been refunded in full');
+    await c.query(`UPDATE orders SET payment_status = 'refunded', status = 'refunded' WHERE id = $1`, [order.id]);
+    // Audit trail for the refunded amount, matching manual-refund's ledger pattern
+    // (orders has no dedicated refunded_at/amount column — order_status_history's
+    // timestamp below and this order_edits row together cover it).
+    const { rows: [claim] } = await c.query(
+      'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+      [order.id, 'refund', { amount: 0 }, { amount }, 'Full refund via admin Refund action', req.user.id]
+    );
+    return { order, amount, claimId: claim.id };
+  });
 
-  // Call Paystack BEFORE the DB transaction — never hold a pg lock during an external HTTP call
-  await refundTransaction(order.paystack_reference);
+  try {
+    await refundTransaction(order.paystack_reference, amount);
+  } catch (err) {
+    await tx(async (c) => {
+      await c.query('UPDATE orders SET payment_status = $1, status = $2 WHERE id = $3', [order.payment_status, order.status, order.id]);
+      await c.query('DELETE FROM order_edits WHERE id = $1', [claimId]);
+    });
+    throw err;
+  }
 
   let updated;
   await tx(async (c) => {
-    const { rows: r } = await c.query(
-      `UPDATE orders SET payment_status = 'refunded', status = 'refunded'
-       WHERE id = $1 RETURNING *`,
-      [req.params.id]
-    );
-    updated = r[0];
     await c.query(
       'INSERT INTO order_status_history (order_id, status, note) VALUES ($1,$2,$3)',
       [order.id, 'refunded', 'Refunded via Paystack by admin']
     );
 
-    // Reverse any store credit spent on this order
-    if (order.user_id) {
-      const { rows: [spent] } = await c.query(
-        `SELECT ABS(amount_ghs) AS amt FROM store_credit_ledger
-         WHERE related_id = $1 AND reason = 'spent_on_order' LIMIT 1`,
-        [order.id]
-      );
-      if (spent) {
-        await c.query(
-          'UPDATE users SET store_credit_ghs = store_credit_ghs + $1 WHERE id = $2',
-          [spent.amt, order.user_id]
-        );
-        await c.query(
-          `INSERT INTO store_credit_ledger (user_id, amount_ghs, reason, related_id)
-           VALUES ($1, $2, 'refund', $3)`,
-          [order.user_id, spent.amt, order.id]
-        );
-      }
-    }
+    await returnCreditSpent(c, order, 'refund');
 
     // Restock: only non-preorder items actually decremented stock at order
     // creation (preorder items incremented products.preorder_count instead,
     // which rollbackPreorderCount below already reverses) — refunding a
-    // preorder item's variant stock here would inflate it incorrectly.
+    // preorder item's variant stock here would inflate it incorrectly. Units
+    // a refunded return already dealt with (restocked or not) are left out.
     const { rows: items } = await c.query(
-      'SELECT variant_id, quantity, is_preorder FROM order_items WHERE order_id = $1',
+      `SELECT oi.variant_id, oi.is_preorder,
+              (oi.quantity - COALESCE((SELECT SUM(ri.quantity) FROM return_items ri
+                                         JOIN returns r ON r.id = ri.return_id
+                                        WHERE ri.order_item_id = oi.id AND r.status = 'refunded'), 0))::int AS quantity
+         FROM order_items oi WHERE oi.order_id = $1`,
       [order.id]
     );
     for (const item of items) {
-      if (item.is_preorder || !item.variant_id) continue;
+      if (item.is_preorder || !item.variant_id || item.quantity <= 0) continue;
       const { rows: [v] } = await c.query(
         'SELECT stock FROM product_variants WHERE id = $1 FOR UPDATE',
         [item.variant_id]
@@ -946,17 +948,11 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
     await rollbackPreorderCount(c, order.id);
     await clawbackPointsForOrder(c, order.id);
 
-    // Audit trail for the refunded amount, matching manual-refund's ledger pattern
-    // (orders has no dedicated refunded_at/amount column — order_status_history's
-    // timestamp above and this order_edits row together cover it).
-    await c.query(
-      'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1,$2,$3,$4,$5,$6)',
-      [order.id, 'refund', { amount: 0 }, { amount: Number(order.total) }, 'Full refund via admin Refund action', req.user.id]
-    );
+    ({ rows: [updated] } = await c.query('SELECT * FROM orders WHERE id = $1', [order.id]));
   });
 
   await logAdminAction(req.user.id, 'order.refund',
-    { id: order.id, reference: order.paystack_reference }, req.ip);
+    { id: order.id, reference: order.paystack_reference, amount }, req.ip);
 
   const email = order.email || order.shipping_address?.email;
   if (email) {
@@ -1040,33 +1036,24 @@ router.post('/orders/:id/mark-paid', asyncHandler(async (req, res) => {
 
 // ── COD: cancel + restore stock ──
 router.post('/orders/:id/cancel-cod', asyncHandler(async (req, res) => {
-  const { rows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  const order = rows[0];
-  if (!order) throw notFound('Order');
-  if (order.payment_method !== 'cod') throw badRequest('Not a COD order');
-  if (!['awaiting_confirmation', 'processing'].includes(order.status)) {
-    throw badRequest('Order cannot be cancelled in its current state');
-  }
-  if (order.payment_status === 'paid') throw badRequest('Cannot cancel a paid order');
-
-  const { rows: items } = await query(
-    'SELECT variant_id, quantity, is_preorder FROM order_items WHERE order_id = $1',
-    [order.id]
-  );
-
-  await tx(async (c) => {
-    for (const item of items.filter((i) => !i.is_preorder)) {
-      await c.query(
-        'UPDATE product_variants SET stock = stock + $1 WHERE id = $2',
-        [item.quantity, item.variant_id]
-      );
+  // With the order locked, a second click waits and then finds it cancelled,
+  // so stock, credit and the coupon use come back once.
+  const order = await tx(async (c) => {
+    const order = await lockOrder(c, req.params.id);
+    if (!order) throw notFound('Order');
+    if (order.payment_method !== 'cod') throw badRequest('Not a COD order');
+    if (!['awaiting_confirmation', 'processing'].includes(order.status)) {
+      throw badRequest('Order cannot be cancelled in its current state');
     }
-    await rollbackPreorderCount(c, order.id);
+    if (order.payment_status === 'paid') throw badRequest('Cannot cancel a paid order');
+
     await c.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [order.id]);
+    await releaseUnpaidOrder(c, order);
     await c.query(
       'INSERT INTO order_status_history (order_id, status, note) VALUES ($1,$2,$3)',
       [order.id, 'cancelled', 'COD order cancelled — stock restored']
     );
+    return order;
   });
 
   await logAdminAction(req.user.id, 'order.cod.cancel', { id: order.id }, req.ip);
@@ -1406,35 +1393,48 @@ router.post('/returns/:id/refund', asyncHandler(async (req, res) => {
 
   const amount = Number(refund_amount_ghs);
 
-  const { rows: [ret] } = await query('SELECT * FROM returns WHERE id = $1', [req.params.id]);
-  if (!ret) throw notFound('Return');
-  if (ret.status !== 'received')
-    throw badRequest(`Cannot issue refund — current status is '${ret.status}'`);
+  const { rows: [found] } = await query('SELECT order_id FROM returns WHERE id = $1', [req.params.id]);
+  if (!found) throw notFound('Return');
 
-  const { rows: [order] } = await query('SELECT * FROM orders WHERE id = $1', [ret.order_id]);
+  // Claimed first, with the order locked (utils/refunds.js): a second click
+  // waits here and then finds the return refunded, and the cap counts
+  // refunds of every kind on the order, this one's included.
+  const { ret, order } = await tx(async (c) => {
+    const order = await lockOrder(c, found.order_id);
+    const { rows: [ret] } = await c.query('SELECT * FROM returns WHERE id = $1', [req.params.id]);
+    if (ret.status !== 'received')
+      throw badRequest(`Cannot issue refund — current status is '${ret.status}'`);
+    const maxRefund = Number(order.total) - await refundedSoFar(c, order.id);
+    if (amount > maxRefund + 0.001) // float tolerance
+      throw badRequest(`Refund amount exceeds maximum of GH₵ ${maxRefund.toFixed(2)} for this order`);
+    if (ret.resolution === 'refund' && order.payment_method !== 'cod' && !order.paystack_reference)
+      throw badRequest('No Paystack reference found on this order');
+    const claimed = await c.query(
+      `UPDATE returns SET status = 'refunded', refunded_at = NOW(), refund_amount_ghs = $1
+        WHERE id = $2 AND status = 'received' RETURNING id`,
+      [amount, ret.id]
+    );
+    if (!claimed.rows.length) throw badRequest('This return is already being refunded');
+    return { ret, order };
+  });
 
-  // Validate refund amount doesn't exceed order total minus already-issued refunds on this order
-  const { rows: [priorRefunds] } = await query(
-    `SELECT COALESCE(SUM(refund_amount_ghs), 0)::float AS total_refunded
-     FROM returns WHERE order_id = $1 AND status = 'refunded' AND id != $2`,
-    [ret.order_id, ret.id]
-  );
-  const maxRefund = Number(order.total) - priorRefunds.total_refunded;
-  if (amount > maxRefund + 0.001) // float tolerance
-    throw badRequest(`Refund amount exceeds maximum of GH₵ ${maxRefund.toFixed(2)} for this order`);
+  // Paystack after the claim is committed — never hold a pg lock during an external HTTP call
+  if (ret.resolution === 'refund' && order.payment_method !== 'cod') {
+    try {
+      await refundTransaction(order.paystack_reference, amount);
+    } catch (err) {
+      await query(
+        `UPDATE returns SET status = 'received', refunded_at = NULL, refund_amount_ghs = NULL WHERE id = $1`,
+        [ret.id]
+      );
+      throw err;
+    }
+  }
 
-  // Fetch return items before the transaction (needed for restock)
   const { rows: returnItems } = await query(
     'SELECT * FROM return_items WHERE return_id = $1',
     [ret.id]
   );
-
-  // Call Paystack BEFORE the DB transaction — never hold a pg lock during an external HTTP call
-  if (ret.resolution === 'refund' && order.payment_method !== 'cod') {
-    if (!order.paystack_reference)
-      throw badRequest('No Paystack reference found on this order');
-    await refundTransaction(order.paystack_reference, amount); // throws on failure
-  }
 
   let updatedReturn;
   await tx(async (c) => {
@@ -1477,12 +1477,7 @@ router.post('/returns/:id/refund', asyncHandler(async (req, res) => {
 
     await clawbackPointsForOrder(c, ret.order_id);
 
-    const { rows: [r] } = await c.query(
-      `UPDATE returns SET status = 'refunded', refunded_at = NOW(), refund_amount_ghs = $1
-       WHERE id = $2 RETURNING *`,
-      [amount, ret.id]
-    );
-    updatedReturn = r;
+    ({ rows: [updatedReturn] } = await c.query('SELECT * FROM returns WHERE id = $1', [ret.id]));
   });
 
   await logAdminAction(
