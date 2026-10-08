@@ -880,7 +880,7 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
   // part of it has gone back.
   const { order, amount, claimId } = await tx(async (c) => {
     const order = await lockOrder(c, req.params.id);
-    if (!order) throw notFound('Order');
+    if (!order) throw notFound("We couldn't find that order.");
     if (order.payment_status !== 'paid') throw badRequest('Order is not in paid status');
     if (!order.paystack_reference) throw badRequest('No payment reference on record');
     const amount = +(Number(order.total) - await refundedSoFar(c, order.id)).toFixed(2);
@@ -973,7 +973,7 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
 // retried twice at once or marked done while a retry is under way.
 async function failedRefund(c, orderId) {
   const order = await lockOrder(c, orderId);
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
   if (order.payment_status !== 'refund_failed') throw badRequest('This order has no failed refund');
   const { rows: [edit] } = await c.query(
     `SELECT after_value FROM order_edits WHERE order_id = $1 AND field = 'refund_failed' ORDER BY id DESC LIMIT 1`,
@@ -1017,7 +1017,7 @@ router.post('/orders/:id/refund-done', asyncHandler(async (req, res) => {
 router.post('/orders/:id/confirm-cod', asyncHandler(async (req, res) => {
   const { rows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   const order = rows[0];
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
   if (order.payment_method !== 'cod') throw badRequest('Not a COD order');
   if (order.status !== 'awaiting_confirmation') throw badRequest('Order is not awaiting confirmation');
 
@@ -1047,7 +1047,7 @@ router.post('/orders/:id/confirm-cod', asyncHandler(async (req, res) => {
 router.post('/orders/:id/mark-paid', asyncHandler(async (req, res) => {
   const { rows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   const order = rows[0];
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
   if (order.payment_method !== 'cod') throw badRequest('Not a COD order');
   if (order.payment_status === 'paid') throw badRequest('Already marked as paid');
 
@@ -1089,7 +1089,7 @@ router.post('/orders/:id/cancel-cod', asyncHandler(async (req, res) => {
   // so stock, credit and the coupon use come back once.
   const order = await tx(async (c) => {
     const order = await lockOrder(c, req.params.id);
-    if (!order) throw notFound('Order');
+    if (!order) throw notFound("We couldn't find that order.");
     if (order.payment_method !== 'cod') throw badRequest('Not a COD order');
     if (!['awaiting_confirmation', 'processing'].includes(order.status)) {
       throw badRequest('Order cannot be cancelled in its current state');
@@ -1362,7 +1362,7 @@ router.get('/returns/:id', asyncHandler(async (req, res) => {
      WHERE r.id = $1`,
     [req.params.id]
   );
-  if (!ret) throw notFound('Return');
+  if (!ret) throw notFound("We couldn't find that return.");
 
   const { rows: rawItems } = await query(
     `SELECT ri.*, oi.product_name, oi.unit_price, oi.variant_description, oi.product_image
@@ -1381,7 +1381,7 @@ router.get('/returns/:id', asyncHandler(async (req, res) => {
 
 router.post('/returns/:id/approve', asyncHandler(async (req, res) => {
   const { rows: [ret] } = await query('SELECT * FROM returns WHERE id = $1', [req.params.id]);
-  if (!ret) throw notFound('Return');
+  if (!ret) throw notFound("We couldn't find that return.");
   if (ret.status !== 'requested') throw badRequest(`Cannot approve a return with status '${ret.status}'`);
 
   const { rows: [updated] } = await query(
@@ -1402,7 +1402,7 @@ router.post('/returns/:id/approve', asyncHandler(async (req, res) => {
 router.post('/returns/:id/reject', asyncHandler(async (req, res) => {
   const { admin_note } = req.body;
   const { rows: [ret] } = await query('SELECT * FROM returns WHERE id = $1', [req.params.id]);
-  if (!ret) throw notFound('Return');
+  if (!ret) throw notFound("We couldn't find that return.");
   if (ret.status !== 'requested') throw badRequest(`Cannot reject a return with status '${ret.status}'`);
 
   const { rows: [updated] } = await query(
@@ -1423,7 +1423,7 @@ router.post('/returns/:id/reject', asyncHandler(async (req, res) => {
 
 router.post('/returns/:id/receive', asyncHandler(async (req, res) => {
   const { rows: [ret] } = await query('SELECT * FROM returns WHERE id = $1', [req.params.id]);
-  if (!ret) throw notFound('Return');
+  if (!ret) throw notFound("We couldn't find that return.");
   if (ret.status !== 'approved') throw badRequest(`Cannot mark received — current status is '${ret.status}'`);
 
   const { rows: [updated] } = await query(
@@ -1443,7 +1443,7 @@ router.post('/returns/:id/refund', asyncHandler(async (req, res) => {
   const amount = Number(refund_amount_ghs);
 
   const { rows: [found] } = await query('SELECT order_id FROM returns WHERE id = $1', [req.params.id]);
-  if (!found) throw notFound('Return');
+  if (!found) throw notFound("We couldn't find that return.");
 
   // Claimed first, with the order locked (utils/refunds.js): a second click
   // waits here and then finds the return refunded, and the cap counts

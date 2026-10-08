@@ -20,7 +20,7 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
 // POST /api/addresses — add a new address to the book
 router.post('/', requireAuth, asyncHandler(async (req, res) => {
   const { label, name, line1, line2, city, state, zip, country, phone, is_default } = req.body;
-  if (!name || !line1 || !city) throw badRequest('name, line1, and city are required');
+  if (!name || !line1 || !city) throw badRequest('Add a name, street address and city.');
 
   const row = await tx(async (c) => {
     if (is_default) {

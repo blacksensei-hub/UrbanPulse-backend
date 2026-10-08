@@ -24,7 +24,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
     [order_id, req.user.id]
   );
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
 
   // Check 30-day eligibility
   const eligibility = await canReturnOrder(order);
@@ -53,7 +53,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   // Validate each requested item
   for (const item of items) {
     const oi = orderItemMap[item.order_item_id];
-    if (!oi) throw badRequest(`Item ${item.order_item_id} does not belong to this order`);
+    if (!oi) throw badRequest("One of those items isn't part of this order.");
     if (!Number.isInteger(item.quantity) || item.quantity <= 0)
       throw badRequest(`Quantity for item ${item.order_item_id} must be a positive integer`);
     const maxReturnable = oi.quantity - (alreadyReturned[oi.id] ?? 0);
@@ -128,7 +128,7 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
     'SELECT * FROM returns WHERE id = $1 AND user_id = $2',
     [req.params.id, req.user.id]
   );
-  if (!ret) throw notFound('Return');
+  if (!ret) throw notFound("We couldn't find that return.");
 
   const { rows: returnItems } = await query(
     `SELECT ri.*, oi.product_name, oi.unit_price, oi.variant_description, oi.product_image

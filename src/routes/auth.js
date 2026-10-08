@@ -19,10 +19,17 @@ const router = express.Router();
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
+// Each rule below carries a message saying what to fix; the first failure is
+// the reply.
 const validate = (req) => {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) throw badRequest('Validation failed', errors.array());
+  if (!errors.isEmpty()) throw badRequest(errors.array()[0].msg, errors.array());
 };
+
+const ENTER_EMAIL = 'Enter a valid email address.';
+const PASSWORD_LENGTH = 'Use at least 8 characters for your password.';
+const SIGN_IN_TIMED_OUT = 'Your sign-in timed out. Enter your email and password again.';
+const RESET_LINK_EXPIRED = 'This reset link has expired or was already used. Request a new one.';
 
 function parseUserAgent(ua = '') {
   const browser = /Edg/.test(ua) ? 'Edge' : /Chrome/.test(ua) ? 'Chrome'
@@ -173,9 +180,9 @@ function userPayload(u) {
 router.post(
   '/register',
   authLimiter,
-  body('email').isEmail().normalizeEmail(),
-  body('password').isLength({ min: 8 }),
-  body('name').isString().trim().isLength({ min: 1, max: 100 }),
+  body('email', ENTER_EMAIL).isEmail().normalizeEmail(),
+  body('password', PASSWORD_LENGTH).isLength({ min: 8 }),
+  body('name', 'Enter your name, up to 100 characters.').isString().trim().isLength({ min: 1, max: 100 }),
   asyncHandler(async (req, res) => {
     validate(req);
     const { email, password, name, referral_code: incomingCode } = req.body;
@@ -229,8 +236,8 @@ router.post(
 router.post(
   '/login',
   authLimiter,
-  body('email').isEmail().normalizeEmail(),
-  body('password').isString(),
+  body('email', ENTER_EMAIL).isEmail().normalizeEmail(),
+  body('password', 'Enter your password.').isString(),
   asyncHandler(async (req, res) => {
     validate(req);
     const { email, password } = req.body;
@@ -255,7 +262,7 @@ router.post(
     if (!user || user.is_blocked || !(await bcrypt.compare(password, user.password_hash))) {
       // Log failure — avoid leaking whether the user exists
       await logLoginEvent(user?.id ?? null, req, false, 'password_bad');
-      throw unauthorized('Invalid credentials');
+      throw unauthorized('Wrong email or password.');
     }
 
     await query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
@@ -284,8 +291,8 @@ router.post('/login/verify-totp', authLimiter, asyncHandler(async (req, res) => 
 
   let payload;
   try { payload = jwt.verify(challenge_token, process.env.JWT_SECRET); }
-  catch { throw unauthorized('Challenge token invalid or expired'); }
-  if (payload.type !== 'totp_challenge') throw unauthorized('Invalid token type');
+  catch { throw unauthorized(SIGN_IN_TIMED_OUT); }
+  if (payload.type !== 'totp_challenge') throw unauthorized(SIGN_IN_TIMED_OUT);
 
   const { rows: [user] } = await query(
     `SELECT id, email, name, role, totp_secret, totp_enabled, totp_recovery_codes,
@@ -295,7 +302,7 @@ router.post('/login/verify-totp', authLimiter, asyncHandler(async (req, res) => 
      FROM users WHERE id = $1`,
     [payload.sub]
   );
-  if (!user || !user.totp_enabled || !user.totp_secret) throw unauthorized('Invalid session');
+  if (!user || !user.totp_enabled || !user.totp_secret) throw unauthorized(SIGN_IN_TIMED_OUT);
 
   let reason = null;
 
@@ -529,7 +536,7 @@ router.delete('/google/link', requireAuth, asyncHandler(async (req, res) => {
 router.post(
   '/password/set',
   requireAuth,
-  body('password').isLength({ min: 8 }),
+  body('password', PASSWORD_LENGTH).isLength({ min: 8 }),
   asyncHandler(async (req, res) => {
     validate(req);
     const { password } = req.body;
@@ -656,7 +663,7 @@ router.put('/me', requireAuth, asyncHandler(async (req, res) => {
 router.post(
   '/forgot-password',
   authLimiter,
-  body('email').isEmail().normalizeEmail(),
+  body('email', ENTER_EMAIL).isEmail().normalizeEmail(),
   asyncHandler(async (req, res) => {
     validate(req);
     const { email } = req.body;
@@ -682,8 +689,8 @@ router.post(
 router.post(
   '/reset-password',
   authLimiter,
-  body('token').isString(),
-  body('password').isLength({ min: 8 }),
+  body('token', RESET_LINK_EXPIRED).isString(),
+  body('password', PASSWORD_LENGTH).isLength({ min: 8 }),
   asyncHandler(async (req, res) => {
     validate(req);
     const { token, password } = req.body;
@@ -692,7 +699,7 @@ router.post(
       'SELECT id, user_id FROM refresh_tokens WHERE token_hash = $1 AND expires_at > NOW()',
       [hash]
     );
-    if (!rows[0]) throw new HttpError(400, 'Invalid or expired token');
+    if (!rows[0]) throw new HttpError(400, RESET_LINK_EXPIRED);
     const newHash = await bcrypt.hash(password, 12);
     await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, rows[0].user_id]);
     await query('DELETE FROM refresh_tokens WHERE id = $1', [rows[0].id]);
@@ -730,7 +737,7 @@ router.post('/totp/enable', requireAuth, asyncHandler(async (req, res) => {
   const { rows: [u] } = await query(
     'SELECT totp_secret FROM users WHERE id = $1', [req.user.id]
   );
-  if (!u?.totp_secret) throw badRequest('Run /totp/setup first');
+  if (!u?.totp_secret) throw badRequest('Start two-factor setup again.');
   if (!verifySync({ token: code, secret: u.totp_secret, window: 1 })?.valid)
     throw badRequest('Invalid verification code');
 

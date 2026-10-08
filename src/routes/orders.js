@@ -29,8 +29,10 @@ async function resolveCoupon(queryFn, coupon_code, { subtotal, shipping, userId,
                              throw badRequest('Coupon has expired');
   if (cpRow.usage_limit && cpRow.used_count >= cpRow.usage_limit)
                              throw badRequest('Coupon usage limit reached');
-  if (subtotal < Number(cpRow.min_order_amount))
-                             throw badRequest('Order does not meet minimum amount');
+  if (subtotal < Number(cpRow.min_order_amount)) {
+    const min = Number(cpRow.min_order_amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    throw badRequest(`This code needs an order of GH₵ ${min} or more.`);
+  }
   // An earlier order is one that went through: paid (or since refunded), or
   // cash on delivery not cancelled. A payment abandoned at Paystack doesn't
   // count. Guests are matched by email, as are customers who once ordered
@@ -438,7 +440,7 @@ router.get('/user/me', requireAuth, viewAsMiddleware, asyncHandler(async (req, r
 // GET /api/orders/:id/receipt.pdf — must appear before /:id to avoid route shadowing
 router.get('/:id/receipt.pdf', requireAuth, asyncHandler(async (req, res) => {
   const { rows: [order] } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
 
   // Ownership — admin bypasses; customers must own the order
   if (order.user_id && order.user_id !== req.user.id && req.user.role !== 'admin') {
@@ -486,9 +488,9 @@ router.get('/:id/receipt.pdf', requireAuth, asyncHandler(async (req, res) => {
 // GET /api/orders/:id/history
 router.get('/:id/history', optionalAuth, asyncHandler(async (req, res) => {
   const { rows: [order] } = await query('SELECT id, user_id FROM orders WHERE id = $1', [req.params.id]);
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
   if (req.user && order.user_id && order.user_id !== req.user.id && req.user.role !== 'admin') {
-    throw notFound('Order');
+    throw notFound("We couldn't find that order.");
   }
   const { rows } = await query(
     'SELECT id, status, note, created_at FROM order_status_history WHERE order_id = $1 ORDER BY created_at ASC',
@@ -501,9 +503,9 @@ router.get('/:id/history', optionalAuth, asyncHandler(async (req, res) => {
 router.get('/:id', optionalAuth, asyncHandler(async (req, res) => {
   const { rows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   const order = rows[0];
-  if (!order) throw notFound('Order');
+  if (!order) throw notFound("We couldn't find that order.");
   if (req.user && order.user_id && order.user_id !== req.user.id && req.user.role !== 'admin') {
-    throw notFound('Order');
+    throw notFound("We couldn't find that order.");
   }
   // Joined through product_variants since order_items only stores variant_id — needed so the
   // customer-facing "write a review" action on a delivered order (Account.jsx) knows which
