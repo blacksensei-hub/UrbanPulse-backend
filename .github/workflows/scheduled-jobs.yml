@@ -1,0 +1,55 @@
+# Runs the store's scheduled jobs by calling the live API (src/routes/cron.js).
+# On Vercel the API isn't a long-running process, so node-cron never fires
+# there. Every 15 minutes: release orders left unpaid for 2 hours. Hourly:
+# abandoned-cart emails. Daily: loyalty points expiry. The last two still obey
+# ENABLE_CART_RECOVERY and ENABLE_LOYALTY_EXPIRY on the server.
+#
+# Needs the repository secret CRON_SECRET, the same value as CRON_SECRET in the
+# API's Vercel environment. Until it's set, every run skips quietly.
+# GitHub may start scheduled runs a few minutes late, and pauses them on a
+# repository with no activity for 60 days.
+name: scheduled jobs
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '7 * * * *'
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Job to run now
+        type: choice
+        options: [expire-orders, abandoned-cart, loyalty-expire]
+        default: expire-orders
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call the API
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          API_URL: ${{ vars.API_URL || 'https://urban-pulse-backend-two.vercel.app' }}
+          SCHEDULE: ${{ github.event.schedule }}
+          CHOSEN: ${{ inputs.job }}
+        run: |
+          case "$SCHEDULE" in
+            '*/15 * * * *') job=expire-orders ;;
+            '7 * * * *')    job=abandoned-cart ;;
+            '17 3 * * *')   job=loyalty-expire ;;
+            *)              job="$CHOSEN" ;;
+          esac
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET isn't set for this repository; skipping $job."
+            exit 0
+          fi
+          echo "Running $job"
+          curl --fail-with-body --silent --show-error --max-time 60 -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$API_URL/api/cron/$job"
+          echo

@@ -41,6 +41,9 @@ router.post(
     if (!order || (order.user_id && order.user_id !== req.user?.id)) throw notFound('Order');
     if (order.payment_method === 'cod') throw badRequest('COD orders do not need a Paystack session');
     if (order.payment_status === 'paid') throw badRequest('Already paid');
+    // An order left unpaid for 2 hours is released (jobs/orderExpiry.js), and
+    // its stock may already be someone else's.
+    if (order.status === 'cancelled') throw badRequest('This order has expired. Please place it again.');
 
     // First init uses the order_number as the Paystack reference (easy manual
     // correlation). Retries after a prior successful init need a fresh suffixed
