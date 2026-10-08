@@ -389,9 +389,13 @@ describe('refunding a whole order', { skip }, () => {
     const charged = paystack.charged.get(order.paystack_reference);
     paystack.charged.delete(order.paystack_reference); // Paystack: "Transaction not found"
 
-    assert.equal((await admin('POST', `/returns/${returnId}/refund`, { refund_amount_ghs: 200, restock: true })).status, 500);
-    assert.equal((await admin('POST', `/orders/${order.id}/manual-refund`, { amount_ghs: 50, method: 'paystack', reason: 'Try' })).status, 500);
-    assert.equal((await admin('POST', `/orders/${order.id}/refund`)).status, 500);
+    // The admin is told Paystack's reason.
+    const refused = [
+      await admin('POST', `/returns/${returnId}/refund`, { refund_amount_ghs: 200, restock: true }),
+      await admin('POST', `/orders/${order.id}/manual-refund`, { amount_ghs: 50, method: 'paystack', reason: 'Try' }),
+      await admin('POST', `/orders/${order.id}/refund`),
+    ];
+    for (const res of refused) assert.deepEqual([res.status, res.body.error], [502, 'Transaction not found']);
     const { rows: [ret] } = await db.query('SELECT status, refund_amount_ghs FROM returns WHERE id = $1', [returnId]);
     assert.deepEqual([ret.status, ret.refund_amount_ghs], ['received', null]);
     const after = await orderRow(order.id);

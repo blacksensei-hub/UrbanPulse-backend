@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { HttpError } from './helpers.js';
 
 const PAYSTACK_API = 'https://api.paystack.co';
 
@@ -87,8 +88,10 @@ export async function refundTransaction(reference, amount = null) {
     body: JSON.stringify(body),
   });
   const data = await res.json();
+  // Paystack's reason ("Refund declined: insufficient balance") is for the
+  // admin who asked, so it goes back as a 502 rather than a hidden crash.
   if (!res.ok || !data.status) {
-    throw new Error(data?.message || `Paystack refund failed (${res.status})`);
+    throw new HttpError(502, data?.message || `Paystack refund failed (${res.status})`);
   }
   return data.data;
 }
