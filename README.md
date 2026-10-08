@@ -62,7 +62,7 @@ Put these in `.env`. Only the first group is needed to start; the rest switch fe
 | `ADMIN_EMAIL` | Where return requests and refunds Paystack refused are sent. Defaults to `SMTP_FROM` |
 | `RETURN_ADDRESS` | The return address printed in return emails |
 | `ENABLE_CART_RECOVERY`, `ENABLE_LOYALTY_EXPIRY` | Set to `true` to run those scheduled jobs |
-| `SENTRY_DSN`, `LOG_LEVEL` | Error reporting, and log detail (default `info`) |
+| `SENTRY_DSN`, `LOG_LEVEL` | Error reporting, and log detail (default `info`). Passwords, codes, tokens and session cookies are blanked before a report leaves (`src/utils/sentryScrub.js`) |
 
 ### Database
 

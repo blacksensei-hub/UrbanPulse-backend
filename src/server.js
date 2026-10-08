@@ -12,6 +12,7 @@ import { generalLimiter } from './utils/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { query } from './db/index.js';
 import { siteUrl } from './utils/site.js';
+import { scrubSentryEvent } from './utils/sentryScrub.js';
 
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
@@ -37,6 +38,10 @@ if (process.env.SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: process.env.NODE_ENV || 'development',
+    // Sentry attaches the request body, cookies and headers to what it sends.
+    // Passwords, codes, tokens and session cookies are blanked first.
+    beforeSend: scrubSentryEvent,
+    beforeSendTransaction: scrubSentryEvent,
   });
 }
 
