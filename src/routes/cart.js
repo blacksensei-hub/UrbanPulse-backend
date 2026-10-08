@@ -78,7 +78,7 @@ router.post(
        WHERE pv.id = $1`,
       [variant_id]
     );
-    if (!vRows[0]) throw notFound('Variant');
+    if (!vRows[0]) throw notFound('That size is no longer available.');
     const { stock, is_preorder } = vRows[0];
     if (!is_preorder && stock < quantity) throw badRequest(`Only ${stock} in stock`);
 
@@ -115,7 +115,7 @@ router.put(
   body('quantity').isInt({ min: 0, max: 99 }),
   asyncHandler(async (req, res) => {
     const cart = await resolveCart(req, false);
-    if (!cart) throw notFound('Cart');
+    if (!cart) throw notFound('Your cart has expired. Refresh the page.');
     const id = Number(req.params.id);
     if (req.body.quantity === 0) {
       await query('DELETE FROM cart_items WHERE id = $1 AND cart_id = $2', [id, cart.id]);
@@ -126,7 +126,7 @@ router.put(
          WHERE ci.id = $1 AND ci.cart_id = $2`,
         [id, cart.id]
       );
-      if (!rows[0]) throw notFound('Cart item');
+      if (!rows[0]) throw notFound('That item is no longer in your cart.');
       if (req.body.quantity > rows[0].stock) throw badRequest(`Only ${rows[0].stock} in stock`);
       await query('UPDATE cart_items SET quantity = $1 WHERE id = $2 AND cart_id = $3', [
         req.body.quantity, id, cart.id,
@@ -138,7 +138,7 @@ router.put(
 
 router.delete('/items/:id', optionalAuth, ...rejectViewAsWrites, asyncHandler(async (req, res) => {
   const cart = await resolveCart(req, false);
-  if (!cart) throw notFound('Cart');
+  if (!cart) throw notFound('Your cart has expired. Refresh the page.');
   await query('DELETE FROM cart_items WHERE id = $1 AND cart_id = $2', [req.params.id, cart.id]);
   res.json(await cartPayload(cart.id));
 }));

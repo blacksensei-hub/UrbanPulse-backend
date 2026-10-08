@@ -38,7 +38,7 @@ router.post(
     // A signed-in customer's order is theirs alone to pay: starting a payment
     // gives the order a new reference. (Guest orders have no owner to check;
     // a payment is still matched to its order by id, see utils/payments.js.)
-    if (!order || (order.user_id && order.user_id !== req.user?.id)) throw notFound('Order');
+    if (!order || (order.user_id && order.user_id !== req.user?.id)) throw notFound("We couldn't find that order.");
     if (order.payment_method === 'cod') throw badRequest('COD orders do not need a Paystack session');
     if (order.payment_status === 'paid') throw badRequest('Already paid');
     // An order left unpaid for 2 hours is released (jobs/orderExpiry.js), and
@@ -54,7 +54,7 @@ router.post(
       ? `${order.order_number}-R${Date.now().toString(36)}`
       : order.order_number;
     const email = order.email || order.shipping_address?.email;
-    if (!email) throw badRequest('Customer email required');
+    if (!email) throw badRequest('Add an email address so we can send your receipt.');
 
     const CHANNELS = {
       mobile_money: ['mobile_money'],

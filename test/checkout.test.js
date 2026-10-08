@@ -299,9 +299,10 @@ describe('coupons', { skip }, () => {
     for (const [label, fields] of Object.entries(cases)) {
       const code = await coupon(fields);
       const { variantId } = await product({ price: 200, stock: 3 });
-      const { status } = await placeOrder({ lines: [{ variantId }], body: { coupon_code: code } });
+      const { status, body } = await placeOrder({ lines: [{ variantId }], body: { coupon_code: code } });
       assert.equal(status, 400, label);
       assert.equal(await stockOf(variantId), 3, `${label}: stock untouched`);
+      if (label === 'under the minimum') assert.equal(body.error, 'This code needs an order of GH₵ 500.00 or more.');
     }
   });
 
