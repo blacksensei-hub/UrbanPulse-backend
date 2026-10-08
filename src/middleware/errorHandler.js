@@ -13,6 +13,15 @@ function isDeliberate(err) {
     || (Number.isInteger(err.status) && err.expose !== false);
 }
 
+// Validation details say which field to fix and why, never what was typed.
+// express-validator puts the submitted value on each entry, so a short
+// password would otherwise come back in the reply, where proxies, error
+// trackers and logs may keep it.
+function publicDetails(details) {
+  if (!Array.isArray(details)) return details;
+  return details.map((d) => ({ path: d?.path, msg: d?.msg }));
+}
+
 export function errorHandler(err, _req, res, _next) {
   const status = err.status || (err.name === 'MulterError' ? 400 : 500);
   if (status >= 500) {
@@ -21,6 +30,6 @@ export function errorHandler(err, _req, res, _next) {
   if (!isDeliberate(err)) return res.status(status).json({ error: GENERIC_ERROR });
   res.status(status).json({
     error: err.message || 'Server error',
-    ...(err.details ? { details: err.details } : {}),
+    ...(err.details ? { details: publicDetails(err.details) } : {}),
   });
 }

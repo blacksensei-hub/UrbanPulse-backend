@@ -2,7 +2,8 @@
 //
 // What clients are told when a request fails. Errors raised on purpose keep
 // their message; a crash (a database error, a TypeError) is logged and the
-// client gets a generic one. Sign-up and sign-in say which field to fix.
+// client gets a generic one. Sign-up and sign-in say which field to fix, and
+// validation details never carry back what was typed.
 // No database: the auth checks fail before any query runs.
 
 import { after, before, test } from 'node:test';
@@ -35,7 +36,9 @@ before(async () => {
 
   const app = express();
   app.use(express.json());
-  app.get('/bad-request', () => { throw badRequest('Coupon has expired', [{ path: 'coupon_code' }]); });
+  app.get('/bad-request', () => {
+    throw badRequest('Coupon has expired', [{ type: 'field', path: 'coupon_code', msg: 'Coupon has expired', value: 'SAVE10', location: 'body' }]);
+  });
   app.get('/deliberate-500', () => { throw new HttpError(500, 'Code generation failed — please try again'); });
   app.get('/disabled', () => { throw Object.assign(new Error('This feature is currently disabled'), { status: 503 }); });
   app.get('/crash', () => { throw new TypeError("Cannot read properties of undefined (reading 'id')"); });
@@ -61,8 +64,8 @@ async function call(path, { body, raw } = {}) {
   return { status: res.status, body: await res.json() };
 }
 
-test('errors raised on purpose keep their message and details', async () => {
-  assert.deepEqual(await call('/bad-request'), { status: 400, body: { error: 'Coupon has expired', details: [{ path: 'coupon_code' }] } });
+test('errors raised on purpose keep their message and details, minus submitted values', async () => {
+  assert.deepEqual(await call('/bad-request'), { status: 400, body: { error: 'Coupon has expired', details: [{ path: 'coupon_code', msg: 'Coupon has expired' }] } });
   assert.deepEqual(await call('/deliberate-500'), { status: 500, body: { error: 'Code generation failed — please try again' } });
   assert.deepEqual(await call('/disabled'), { status: 503, body: { error: 'This feature is currently disabled' } });
 });
@@ -87,8 +90,17 @@ test('a malformed JSON body is a 400, not a crash', async () => {
 test('sign-up and sign-in say which field to fix', async () => {
   const signUp = (fields) => call('/api/auth/register', { body: { name: 'Ama', email: 'ama@example.test', password: 'long-enough-1', ...fields } });
   assert.equal((await signUp({ email: 'not-an-email' })).body.error, 'Enter a valid email address.');
-  assert.equal((await signUp({ password: 'short' })).body.error, 'Use at least 8 characters for your password.');
   assert.equal((await signUp({ name: '' })).body.error, 'Enter your name, up to 100 characters.');
   const signIn = await call('/api/auth/login', { body: { email: 'ama@example.test' } });
   assert.deepEqual([signIn.status, signIn.body.error], [400, 'Enter your password.']);
+});
+
+// The auth limiter allows 5 tries per window, and this file makes 4.
+test('a sign-up with a short password never gets the password back', async () => {
+  const password = 'Pw7-xQz';
+  const { status, body } = await call('/api/auth/register', { body: { name: 'Ama', email: 'ama@example.test', password } });
+  assert.equal(status, 400);
+  assert.equal(body.error, 'Use at least 8 characters for your password.');
+  assert.deepEqual(body.details, [{ path: 'password', msg: 'Use at least 8 characters for your password.' }]);
+  assert.ok(!JSON.stringify(body).includes(password), 'the reply echoes the password');
 });
