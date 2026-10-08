@@ -20,6 +20,7 @@ import { runAbandonedCartJob } from '../jobs/abandonedCart.js';
 import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
 import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
 import { lockOrder, refundedSoFar, rollbackPreorderCount, returnCreditSpent, returnPointsRedeemed, releaseUnpaidOrder } from '../utils/refunds.js';
+import { refundPayment } from '../utils/payments.js';
 import { logger } from '../utils/logger.js';
 import { normalizeCategory } from '../utils/category.js';
 import { notifyBackInStock, isMissingTable } from '../utils/stockAlerts.js';
@@ -965,6 +966,53 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
   res.json(updated);
 }));
 
+// ── Payments to refund ──
+// A payment for a cancelled order whose automatic refund Paystack refused
+// (utils/payments.js refundPayment) waits on the Today page until it's retried
+// here or refunded by hand. Both claim it with the order locked, so it can't be
+// retried twice at once or marked done while a retry is under way.
+async function failedRefund(c, orderId) {
+  const order = await lockOrder(c, orderId);
+  if (!order) throw notFound('Order');
+  if (order.payment_status !== 'refund_failed') throw badRequest('This order has no failed refund');
+  const { rows: [edit] } = await c.query(
+    `SELECT after_value FROM order_edits WHERE order_id = $1 AND field = 'refund_failed' ORDER BY id DESC LIMIT 1`,
+    [order.id]
+  );
+  return { order, amount: Number(edit.after_value.amount), reference: edit.after_value.reference };
+}
+
+router.post('/orders/:id/retry-refund', asyncHandler(async (req, res) => {
+  const { order, amount, reference } = await tx(async (c) => {
+    const failed = await failedRefund(c, req.params.id);
+    await c.query(`UPDATE orders SET payment_status = 'refunding' WHERE id = $1`, [failed.order.id]);
+    return failed;
+  });
+  const refunded = await refundPayment(order, reference, amount, { adminId: req.user.id });
+  await logAdminAction(req.user.id, 'order.refund_retry', { id: order.id, amount, refunded }, req.ip);
+  if (!refunded) return res.status(502).json({ error: 'Paystack refused the refund again. The reason is on the order.' });
+  const { rows: [updated] } = await query('SELECT * FROM orders WHERE id = $1', [order.id]);
+  res.json(updated);
+}));
+
+router.post('/orders/:id/refund-done', asyncHandler(async (req, res) => {
+  const updated = await tx(async (c) => {
+    const { order, amount } = await failedRefund(c, req.params.id);
+    const { rows: [o] } = await c.query(`UPDATE orders SET payment_status = 'refunded' WHERE id = $1 RETURNING *`, [order.id]);
+    await c.query(
+      'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+      [order.id, 'refunded', 'Refunded directly by the store']
+    );
+    await c.query(
+      'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      [order.id, 'refund', { amount: 0 }, { amount, method: 'by_hand' }, 'Refunded by hand after the automatic refund failed', req.user.id]
+    );
+    return o;
+  });
+  await logAdminAction(req.user.id, 'order.refund_by_hand', { id: updated.id }, req.ip);
+  res.json(updated);
+}));
+
 // ── COD: confirm order ──
 router.post('/orders/:id/confirm-cod', asyncHandler(async (req, res) => {
   const { rows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
@@ -1859,6 +1907,7 @@ router.get('/today', asyncHandler(async (req, res) => {
     toRefund, toRefundTotal,
     stockItems, outOfStockCount, lowStockCount,
     preorders, abandoned,
+    refundsFailed, refundsFailedTotal,
   ] = await Promise.all([
 
     // 1. Today revenue + order count
@@ -1966,6 +2015,23 @@ router.get('/today', asyncHandler(async (req, res) => {
                  AND o.payment_status = 'paid'
                  AND o.created_at > c.updated_at
              )`),
+
+    // 11a. Payments to refund: Paystack refused the automatic refund of a
+    // payment for a cancelled order (oldest first, with the latest reason).
+    query(`SELECT o.id, o.order_number, COALESCE(u.name, o.email) AS customer_name,
+                  COALESCE(u.email, o.email) AS customer_email,
+                  (e.after_value->>'amount')::numeric AS amount_ghs,
+                  e.after_value->>'error' AS error, e.created_at AS failed_at
+           FROM orders o
+           LEFT JOIN users u ON u.id = o.user_id
+           JOIN LATERAL (SELECT after_value, created_at FROM order_edits
+                          WHERE order_id = o.id AND field = 'refund_failed'
+                          ORDER BY id DESC LIMIT 1) e ON true
+           WHERE o.payment_status = 'refund_failed'
+           ORDER BY e.created_at ASC LIMIT 10`),
+
+    // 11b. Payments-to-refund count
+    query(`SELECT COUNT(*)::int AS v FROM orders WHERE payment_status = 'refund_failed'`),
   ]);
 
   res.json({
@@ -1991,6 +2057,8 @@ router.get('/today', asyncHandler(async (req, res) => {
       low_stock_count:                    lowStockCount.rows[0].v,
       pending_preorders_ready_to_release: preorders.rows,
       abandoned_carts_72h:                abandoned.rows[0].v,
+      payments_to_refund:                 refundsFailed.rows,
+      payments_to_refund_count:           refundsFailedTotal.rows[0].v,
     },
   });
 }));

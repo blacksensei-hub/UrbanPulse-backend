@@ -59,7 +59,7 @@ Put these in `.env`. Only the first group is needed to start; the rest switch fe
 | `SMS_API_KEY`, `SMS_SENDER_ID`, `SMS_BASE_URL` | Sending SMS through Arkesel. Without a key, SMS is off |
 | `GOOGLE_CLIENT_ID` | Google sign-in |
 | `BACKEND_URL` | The API's public address, used in unsubscribe links |
-| `ADMIN_EMAIL` | Where return requests are sent. Defaults to `SMTP_FROM` |
+| `ADMIN_EMAIL` | Where return requests and refunds Paystack refused are sent. Defaults to `SMTP_FROM` |
 | `RETURN_ADDRESS` | The return address printed in return emails |
 | `ENABLE_CART_RECOVERY`, `ENABLE_LOYALTY_EXPIRY` | Set to `true` to run those scheduled jobs |
 | `SENTRY_DSN`, `LOG_LEVEL` | Error reporting, and log detail (default `info`) |

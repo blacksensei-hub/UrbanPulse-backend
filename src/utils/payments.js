@@ -91,32 +91,59 @@ export async function confirmPayment(reference, charge) {
     await awardPointsForOrder(c, ord);
     return ord;
   });
-  if (toRefund) await refundCancelledOrderPayment(toRefund, reference, charge);
+  if (toRefund) await refundPayment(toRefund, reference, Number(charge.amount) / 100);
   if (order) await notifyPaid(order);
   return order;
 }
 
-// A payment for an order that was cancelled and can't be reinstated goes back
-// in full. If Paystack refuses, the claim is lifted and the error logged, so a
-// retry of the webhook (or an admin) can try again.
-async function refundCancelledOrderPayment(order, reference, charge) {
-  const amount = Number(charge.amount) / 100;
+/**
+ * Gives a payment for a cancelled order back in full. The caller has claimed
+ * it (payment_status 'refunding'). Returns true once refunded.
+ *
+ * If Paystack refuses, the money is still with the store, so the order is
+ * marked 'refund_failed' with the amount, reference and Paystack's reason, the
+ * store is emailed, and it waits in "Payments to refund" on the admin's Today
+ * page: retry there, or refund the customer by hand and mark it done. A retry
+ * of the webhook from Paystack tries again too. `adminId` is set when an
+ * admin's retry made the attempt.
+ *
+ * The failure goes in the order's edit log, which only admins see, not its
+ * status history: customers see that, and Paystack's reason can be about the
+ * store's own account.
+ */
+export async function refundPayment(order, reference, amount, { adminId = null } = {}) {
   try {
     await refundTransaction(reference, amount);
   } catch (err) {
-    await query(`UPDATE orders SET payment_status = $1 WHERE id = $2 AND payment_status = 'refunding'`, [order.payment_status, order.id]);
-    logger.error('Refunding a payment for a cancelled order failed', { orderId: order.id, reference, err: err.message });
-    return;
+    await tx(async (c) => {
+      await c.query(`UPDATE orders SET payment_status = 'refund_failed' WHERE id = $1`, [order.id]);
+      await c.query(
+        'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [order.id, 'refund_failed', {}, { amount, reference, error: err.message },
+          adminId ? 'Retried refund failed' : 'Automatic refund failed: paid after the order was cancelled', adminId]
+      );
+    });
+    logger.error('Refunding a payment for a cancelled order failed', { orderId: order.id, reference, amount, err: err.message });
+    // An admin's retry is answered on screen; only automatic failures email.
+    const staff = process.env.ADMIN_EMAIL || process.env.SMTP_FROM;
+    if (staff && !adminId) {
+      await sendEmail({ to: staff, ...emailTemplates.refundFailed({ order_number: order.order_number, amount, reference, error: err.message }) })
+        .catch((e) => logger.error('Refund-needed staff email failed', { orderId: order.id, err: e.message }));
+    }
+    return false;
   }
   await tx(async (c) => {
     await c.query(`UPDATE orders SET payment_status = 'refunded' WHERE id = $1`, [order.id]);
     await c.query(
       'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
-      [order.id, 'refunded', 'Paid after the order was cancelled, with its stock gone; refunded through Paystack']
+      [order.id, 'refunded', adminId
+        ? 'Refunded through Paystack'
+        : 'Paid after the order was cancelled, with its stock gone; refunded through Paystack']
     );
     await c.query(
-      'INSERT INTO order_edits (order_id, field, before_value, after_value, reason) VALUES ($1, $2, $3, $4, $5)',
-      [order.id, 'refund', { amount: 0 }, { amount }, 'Automatic refund: paid after the order was cancelled']
+      'INSERT INTO order_edits (order_id, field, before_value, after_value, reason, admin_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      [order.id, 'refund', { amount: 0 }, { amount },
+        adminId ? 'Refund retried after the automatic refund failed' : 'Automatic refund: paid after the order was cancelled', adminId]
     );
   });
   logger.warn('Refunded a payment for a cancelled order', { orderId: order.id, reference, amount });
@@ -125,6 +152,7 @@ async function refundCancelledOrderPayment(order, reference, charge) {
     await sendEmail({ to: email, ...emailTemplates.refunded({ ...order, total: amount }) })
       .catch((err) => logger.error('Late-payment refund email failed', { orderId: order.id, err: err.message }));
   }
+  return true;
 }
 
 // Confirmation email and SMS, and referral credit. Awaited, not left
