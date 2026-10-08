@@ -1,7 +1,8 @@
 # Checks every pull request and every push to master: lint, a syntax check
 # of every source file, the pricing checks, and the checkout tests against a
 # throwaway PostgreSQL in a container (test/support/testdb.js). Nothing here
-# deploys, and nothing here can reach the live database.
+# deploys, and nothing here can reach the live database. It can also be run
+# by hand (Actions → ci → Run workflow), for when GitHub drops a push event.
 name: ci
 
 on:
@@ -9,6 +10,7 @@ on:
     branches: [master]
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
