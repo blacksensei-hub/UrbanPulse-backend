@@ -66,6 +66,10 @@ export async function returnCreditSpent(client, order, reason) {
   return amount;
 }
 
+// The history note an order gets when the expiry job (utils/orderExpiry.js)
+// releases it; a payment that arrives afterwards looks for it.
+export const EXPIRED_NOTE = 'Not paid within 2 hours: stock, store credit and coupon released';
+
 // Gives back what placing an unpaid order took: its stock, any pre-order
 // places, the store credit spent and the coupon use. The caller has the
 // order locked and has just moved it to cancelled, so this runs once per
@@ -89,4 +93,81 @@ export async function releaseUnpaidOrder(client, order) {
       WHERE id IN (SELECT coupon_id FROM order_coupons WHERE order_id = $1)`,
     [order.id]
   );
+}
+
+class CannotReinstate extends Error {}
+
+// The reverse of releaseUnpaidOrder, for a payment that arrives after the
+// expiry job released the order: takes its stock, pre-order places and store
+// credit again and counts the coupon use. All or nothing: returns false, with
+// nothing changed, if any of it is no longer there, or if the order was
+// cancelled for another reason (an admin's cancellation is never undone by a
+// payment). The caller has the order locked.
+export async function reinstateExpiredOrder(client, order) {
+  const { rows: [last] } = await client.query(
+    `SELECT note FROM order_status_history WHERE order_id = $1 AND status = 'cancelled' ORDER BY id DESC LIMIT 1`,
+    [order.id]
+  );
+  if (last?.note !== EXPIRED_NOTE) return false;
+
+  await client.query('SAVEPOINT reinstate');
+  try {
+    const { rows: items } = await client.query(
+      `SELECT oi.variant_id, oi.quantity, oi.is_preorder, pv.product_id
+         FROM order_items oi LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+        WHERE oi.order_id = $1`,
+      [order.id]
+    );
+    for (const item of items) {
+      if (!item.variant_id) continue;
+      if (item.is_preorder) {
+        const took = await client.query(
+          `UPDATE products SET preorder_count = preorder_count + $1
+            WHERE id = $2 AND (preorder_limit IS NULL OR preorder_count + $1 <= preorder_limit) RETURNING id`,
+          [item.quantity, item.product_id]
+        );
+        if (!took.rows.length) throw new CannotReinstate('pre-order limit reached');
+      } else {
+        const took = await client.query(
+          'UPDATE product_variants SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING id',
+          [item.quantity, item.variant_id]
+        );
+        if (!took.rows.length) throw new CannotReinstate('out of stock');
+      }
+    }
+
+    // The credit the expiry gave back is spent on the order again.
+    if (order.user_id) {
+      const { rows: [given] } = await client.query(
+        `SELECT COALESCE(SUM(amount_ghs), 0) AS amount FROM store_credit_ledger
+          WHERE related_id = $1 AND user_id = $2 AND reason = 'order_cancelled'`,
+        [order.id, order.user_id]
+      );
+      const amount = Number(given.amount);
+      if (amount > 0) {
+        const took = await client.query(
+          'UPDATE users SET store_credit_ghs = store_credit_ghs - $1 WHERE id = $2 AND store_credit_ghs >= $1 RETURNING id',
+          [amount, order.user_id]
+        );
+        if (!took.rows.length) throw new CannotReinstate('store credit already spent');
+        await client.query(
+          `INSERT INTO store_credit_ledger (user_id, amount_ghs, reason, related_id) VALUES ($1, $2, 'spent_on_order', $3)`,
+          [order.user_id, -amount, order.id]
+        );
+      }
+    }
+
+    // The coupon was valid when the order was placed, so its use counts
+    // again even if the coupon has since run out.
+    await client.query(
+      'UPDATE coupons SET used_count = used_count + 1 WHERE id IN (SELECT coupon_id FROM order_coupons WHERE order_id = $1)',
+      [order.id]
+    );
+    await client.query('RELEASE SAVEPOINT reinstate');
+    return true;
+  } catch (err) {
+    if (!(err instanceof CannotReinstate)) throw err;
+    await client.query('ROLLBACK TO SAVEPOINT reinstate');
+    return false;
+  }
 }

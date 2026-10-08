@@ -30,6 +30,7 @@ import addressRoutes from './routes/addresses.js';
 import statsRoutes from './routes/stats.js';
 import dropRoutes from './routes/drops.js';
 import adminDropRoutes from './routes/adminDrops.js';
+import cronRoutes from './routes/cron.js';
 import './jobs/index.js';
 
 if (process.env.SENTRY_DSN) {
@@ -155,6 +156,7 @@ app.use('/api/loyalty', loyaltyRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/drops', dropRoutes);
+app.use('/api/cron', cronRoutes);
 
 if (process.env.SENTRY_DSN) {
   Sentry.setupExpressErrorHandler(app);
