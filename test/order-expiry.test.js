@@ -33,7 +33,7 @@ Object.assign(process.env, {
 });
 
 // ── Paystack stand-in ────────────────────────────────────────────────
-const paystack = { tx: new Map(), refunds: [], down: false };
+const paystack = { tx: new Map(), refunds: [], down: false, refuseRefund: null };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, options = {}) => {
   const u = String(url);
@@ -52,6 +52,7 @@ globalThis.fetch = async (url, options = {}) => {
   if (u === 'https://api.paystack.co/refund') {
     const body = JSON.parse(options.body);
     await new Promise((resolve) => setTimeout(resolve, 60));
+    if (paystack.refuseRefund) return Response.json({ status: false, message: paystack.refuseRefund }, { status: 400 });
     paystack.refunds.push({ transaction: body.transaction, amount: body.amount });
     return Response.json({ status: true, data: { amount: body.amount, status: 'pending' } });
   }
@@ -191,6 +192,7 @@ beforeEach(async () => {
   paystack.tx.clear();
   paystack.refunds.length = 0;
   paystack.down = false;
+  paystack.refuseRefund = null;
   // Only this test's orders count: earlier tests' leftovers are closed off.
   await db.query(`UPDATE orders SET status = 'cancelled' WHERE status NOT IN ('cancelled', 'refunded') AND payment_status <> 'paid'`);
   await db.query('DELETE FROM site_settings');
@@ -411,6 +413,85 @@ describe('a payment that arrives after the order was released', { skip }, () => 
     assert.equal(paystack.refunds.length, 1);
     assert.equal((await orderRow(order.id)).status, 'cancelled');
     assert.equal(await stockOf(variantId), 5);
+  });
+});
+
+// ── Refunds Paystack refuses ─────────────────────────────────────────
+describe('a refund Paystack refuses', { skip }, () => {
+  const asAdmin = (method, path) => fetch(`${base}/api/admin${path}`, { method, headers: { authorization: `Bearer ${adminToken}` } });
+  const today = async () => (await (await asAdmin('GET', '/today')).json()).queues;
+  // The order's row in the queue, if it is waiting there. Orders from the
+  // other tests stay in the database, so look for this one by number.
+  const waiting = async (order) => (await today()).payments_to_refund.find((r) => r.order_number === order.order_number);
+
+  // A late payment for an expired order whose stock has gone, refused by Paystack.
+  async function refundRefused(reason = 'Refund declined: insufficient balance') {
+    const variantId = await product({ stock: 5 });
+    const { order, reference } = await placeOrder({ variantId });
+    await hoursAgo(order.id, 3);
+    await runExpiry();
+    await db.query('UPDATE product_variants SET stock = 0 WHERE id = $1', [variantId]);
+    paystack.refuseRefund = reason;
+    await paidOnPaystack(reference, order.id, order.total);
+    return { order, reference };
+  }
+
+  test('waits in Payments to refund on the Today page, with its amount and reason', async () => {
+    const countBefore = (await today()).payments_to_refund_count;
+    const { order } = await refundRefused();
+    assert.equal((await orderRow(order.id)).payment_status, 'refund_failed');
+    assert.equal((await today()).payments_to_refund_count, countBefore + 1);
+    const row = await waiting(order);
+    assert.deepEqual([money(row.amount_ghs), row.error], [money(order.total), 'Refund declined: insufficient balance']);
+  });
+
+  test("the customer's order history doesn't show Paystack's reason", async () => {
+    const { order } = await refundRefused();
+    const history = await (await fetch(`${base}/api/orders/${order.id}/history`)).json();
+    assert.ok(history.length > 0);
+    assert.ok(history.every((h) => h.status !== 'refund_failed' && !/declined|balance/i.test(h.note ?? '')));
+  });
+
+  test('a retry from the Today page refunds it and clears it', async () => {
+    const { order, reference } = await refundRefused();
+    paystack.refuseRefund = null;
+    const res = await asAdmin('POST', `/orders/${order.id}/retry-refund`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(paystack.refunds, [{ transaction: reference, amount: Math.round(money(order.total) * 100) }]);
+    assert.equal((await orderRow(order.id)).payment_status, 'refunded');
+    assert.equal(await waiting(order), undefined);
+  });
+
+  test('a retry Paystack refuses again keeps it waiting, with the new reason', async () => {
+    const { order } = await refundRefused();
+    paystack.refuseRefund = 'Transaction has been disputed';
+    assert.equal((await asAdmin('POST', `/orders/${order.id}/retry-refund`)).status, 502);
+    assert.equal((await orderRow(order.id)).payment_status, 'refund_failed');
+    assert.equal((await waiting(order)).error, 'Transaction has been disputed');
+  });
+
+  test('marked refunded by hand, it clears without calling Paystack', async () => {
+    const { order } = await refundRefused();
+    assert.equal((await asAdmin('POST', `/orders/${order.id}/refund-done`)).status, 200);
+    assert.equal(paystack.refunds.length, 0);
+    assert.equal((await orderRow(order.id)).payment_status, 'refunded');
+    assert.equal(await waiting(order), undefined);
+  });
+
+  test('Paystack sending the payment again retries the refund by itself', async () => {
+    const { order, reference } = await refundRefused();
+    paystack.refuseRefund = null;
+    await paidOnPaystack(reference, order.id, order.total);
+    assert.equal(paystack.refunds.length, 1);
+    assert.equal((await orderRow(order.id)).payment_status, 'refunded');
+  });
+
+  test('only an order with a failed refund can be retried or marked done', async () => {
+    const { order, reference } = await placeOrder({ variantId: await product() });
+    await paidOnPaystack(reference, order.id, order.total);
+    assert.equal((await asAdmin('POST', `/orders/${order.id}/retry-refund`)).status, 400);
+    assert.equal((await asAdmin('POST', `/orders/${order.id}/refund-done`)).status, 400);
+    assert.equal(paystack.refunds.length, 0);
   });
 });
 

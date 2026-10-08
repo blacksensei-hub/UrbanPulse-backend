@@ -535,6 +535,28 @@ export const emailTemplates = {
     };
   },
 
+  // Admin-facing: a customer's payment for a cancelled order couldn't be
+  // refunded automatically, so the money is still with the store.
+  refundFailed: ({ order_number, amount, reference, error }) => {
+    const bodyHtml = `
+      ${eyebrow('Refund needed')}
+      ${h1('A customer is owed a refund.')}
+      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">A payment arrived for an order that had been cancelled, and Paystack refused the automatic refund. Retry it from the Today page, or refund the customer yourself and mark it done there.</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 16px;">
+        <tr><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;color:${COLOR.muted};width:110px;">Order</td><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;font-family:${MONO};color:${COLOR.text};">${escapeHtml(order_number)}</td></tr>
+        <tr><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;color:${COLOR.muted};">Amount</td><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;color:${COLOR.text};">${formatGHS(amount)}</td></tr>
+        <tr><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;color:${COLOR.muted};">Paystack ref</td><td style="padding:6px 0;border-bottom:1px solid ${COLOR.border};font-size:13px;font-family:${MONO};color:${COLOR.text};">${escapeHtml(reference)}</td></tr>
+        <tr><td style="padding:6px 0;font-size:13px;color:${COLOR.muted};">Reason</td><td style="padding:6px 0;font-size:13px;color:${COLOR.text};">${escapeHtml(error)}</td></tr>
+      </table>
+      ${ctaButton('Open the Today page', `${frontendUrl()}/admin`)}
+    `;
+    return {
+      subject: `Refund needed — ${order_number}`,
+      html: renderLayout({ preheader: `${formatGHS(amount)} to refund on order ${order_number}`, bodyHtml }),
+      text: `A customer is owed a refund.\nOrder: ${order_number}\nAmount: ${formatGHS(amount)}\nPaystack ref: ${reference}\nReason Paystack gave: ${error}\n\nRetry it from the Today page, or refund the customer yourself and mark it done there: ${frontendUrl()}/admin${renderTextFooter()}`,
+    };
+  },
+
   // Admin-facing: fires to notify staff a customer has requested a return.
   returnRequested: (ret, customerName) => {
     const name = titleCase(customerName);
