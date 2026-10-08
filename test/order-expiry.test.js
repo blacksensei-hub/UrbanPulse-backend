@@ -117,11 +117,11 @@ async function product({ price = 200, stock = 5 } = {}) {
   return v.id;
 }
 
-async function customer({ credit = 0 } = {}) {
+async function customer({ credit = 0, points = 0 } = {}) {
   seq += 1;
   const { rows: [u] } = await db.query(
-    'INSERT INTO users (email, name, store_credit_ghs) VALUES ($1, $2, $3) RETURNING id, role, email',
-    [`expiry${seq}@example.test`, `Customer ${seq}`, credit],
+    'INSERT INTO users (email, name, store_credit_ghs, loyalty_points) VALUES ($1, $2, $3, $4) RETURNING id, role, email',
+    [`expiry${seq}@example.test`, `Customer ${seq}`, credit, points],
   );
   return { id: u.id, email: u.email, token: signAccess(u) };
 }
@@ -180,6 +180,10 @@ const orderRow = async (id) => (await db.query('SELECT * FROM orders WHERE id = 
 const stockOf = async (id) => (await db.query('SELECT stock FROM product_variants WHERE id = $1', [id])).rows[0].stock;
 const creditOf = async (id) => money((await db.query('SELECT store_credit_ghs FROM users WHERE id = $1', [id])).rows[0].store_credit_ghs);
 const usedCount = async (code) => (await db.query('SELECT used_count FROM coupons WHERE code = $1', [code])).rows[0].used_count;
+const pointsOf = async (id) => (await db.query('SELECT loyalty_points FROM users WHERE id = $1', [id])).rows[0].loyalty_points;
+const earnedOn = async (orderId) => Number((await db.query(
+  "SELECT COALESCE(SUM(delta), 0) AS n FROM loyalty_ledger WHERE related_id = $1 AND reason = 'earned_purchase'", [orderId],
+)).rows[0].n);
 const lastNote = async (id) => (await db.query('SELECT status, note FROM order_status_history WHERE order_id = $1 ORDER BY id DESC LIMIT 1', [id])).rows[0];
 
 beforeEach(async () => {
@@ -349,6 +353,49 @@ describe('a payment that arrives after the order was released', { skip }, () => 
       fetch(`${base}/api/checkout/verify/${encodeURIComponent(reference)}`),
     ]);
     assert.equal(paystack.refunds.length, 1);
+  });
+
+  test('gives back the points the order used on expiry, and takes them again if it is reinstated', async () => {
+    const user = await customer({ points: 300 });
+    const variantId = await product({ stock: 5 });
+    const { order, reference } = await placeOrder({ variantId, user, body: { apply_loyalty_points: 200 } });
+    assert.equal(await pointsOf(user.id), 100);
+    await hoursAgo(order.id, 3);
+    assert.equal((await runExpiry()).body.expired, 1);
+    assert.equal(await pointsOf(user.id), 300);
+
+    await paidOnPaystack(reference, order.id, order.total);
+    assert.equal((await orderRow(order.id)).payment_status, 'paid');
+    assert.equal(await pointsOf(user.id), 100 + await earnedOn(order.id));
+  });
+
+  test('is refunded when the points it used have been spent since', async () => {
+    const user = await customer({ points: 300 });
+    const variantId = await product({ stock: 5 });
+    const { order, reference } = await placeOrder({ variantId, user, body: { apply_loyalty_points: 200 } });
+    await hoursAgo(order.id, 3);
+    await runExpiry();
+    await db.query('UPDATE users SET loyalty_points = 50 WHERE id = $1', [user.id]);
+
+    await paidOnPaystack(reference, order.id, order.total);
+    assert.equal(paystack.refunds.length, 1);
+    assert.equal(await pointsOf(user.id), 50);
+    assert.equal(await stockOf(variantId), 5);
+  });
+
+  test('expired, reinstated, then refunded in full: credit and points come back once', async () => {
+    const user = await customer({ credit: 50, points: 300 });
+    const variantId = await product({ stock: 5 });
+    const { order, reference } = await placeOrder({ variantId, user, body: { apply_store_credit_ghs: 50, apply_loyalty_points: 200 } });
+    await hoursAgo(order.id, 3);
+    await runExpiry();
+    await paidOnPaystack(reference, order.id, order.total);
+    assert.deepEqual([await creditOf(user.id), await pointsOf(user.id) - await earnedOn(order.id)], [0, 100]);
+
+    const refund = await fetch(`${base}/api/admin/orders/${order.id}/refund`, { method: 'POST', headers: { authorization: `Bearer ${adminToken}` } });
+    assert.equal(refund.status, 200, JSON.stringify(await refund.json()));
+    assert.equal(await creditOf(user.id), 50, 'the 50 spent comes back once, not twice');
+    assert.equal(await pointsOf(user.id), 300, 'the 200 redeemed come back once, and the points earned are taken back');
   });
 
   test("is refunded, not reinstated, when an admin cancelled the order, even with stock", async () => {

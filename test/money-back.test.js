@@ -130,11 +130,11 @@ async function product({ price = 200, stock = 5 } = {}) {
   return v.id;
 }
 
-async function customer({ credit = 0 } = {}) {
+async function customer({ credit = 0, points = 0 } = {}) {
   seq += 1;
   const { rows: [u] } = await db.query(
-    'INSERT INTO users (email, name, store_credit_ghs) VALUES ($1, $2, $3) RETURNING id, role, email',
-    [`money${seq}@example.test`, `Customer ${seq}`, credit],
+    'INSERT INTO users (email, name, store_credit_ghs, loyalty_points) VALUES ($1, $2, $3, $4) RETURNING id, role, email',
+    [`money${seq}@example.test`, `Customer ${seq}`, credit, points],
   );
   return { id: u.id, email: u.email, token: signAccess(u) };
 }
@@ -226,6 +226,11 @@ const orderRow = async (id) => (await db.query('SELECT * FROM orders WHERE id = 
 const stockOf = async (variantId) => (await db.query('SELECT stock FROM product_variants WHERE id = $1', [variantId])).rows[0].stock;
 const creditOf = async (userId) => money((await db.query('SELECT store_credit_ghs FROM users WHERE id = $1', [userId])).rows[0].store_credit_ghs);
 const usedCount = async (code) => (await db.query('SELECT used_count FROM coupons WHERE code = $1', [code])).rows[0].used_count;
+const pointsOf = async (userId) => (await db.query('SELECT loyalty_points FROM users WHERE id = $1', [userId])).rows[0].loyalty_points;
+const returnedPoints = async (userId) => (await db.query(
+  `SELECT delta, expires_at > NOW() + interval '300 days' AS fresh FROM loyalty_ledger WHERE user_id = $1 AND reason = 'points_returned' ORDER BY id`,
+  [userId],
+)).rows;
 const statuses = (results) => results.map((r) => r.status).sort();
 
 beforeEach(async () => {
@@ -463,6 +468,34 @@ describe('cancelling an unpaid order', { skip }, () => {
     const order = await paidOrder({ variantId, qty: 2, user: await customer() });
     assert.equal((await admin('PUT', `/orders/${order.id}/status`, { status: 'cancelled' })).status, 400);
     assert.equal(await stockOf(variantId), 3);
+  });
+});
+
+// ── Loyalty points spent on an order ─────────────────────────────────
+describe('loyalty points spent on an order', { skip }, () => {
+  test('come back when an unpaid order is cancelled, as a fresh batch that expires later', async () => {
+    const user = await customer({ points: 300 });
+    const placed = await placeOrder({ variantId: await product(), qty: 2, user, body: { payment_method: 'cod', apply_loyalty_points: 200 } });
+    assert.equal(placed.status, 201, JSON.stringify(placed.body));
+    assert.equal(await pointsOf(user.id), 100);
+
+    assert.equal((await admin('POST', `/orders/${placed.body.id}/cancel-cod`)).status, 200);
+    assert.equal(await pointsOf(user.id), 300);
+    assert.deepEqual(await returnedPoints(user.id), [{ delta: 200, fresh: true }]);
+  });
+
+  test('come back on a full refund, but not on a partial one', async () => {
+    const user = await customer({ points: 300 });
+    const order = await paidOrder({ variantId: await product(), qty: 2, user, body: { apply_loyalty_points: 200 } });
+
+    const returnId = await receivedReturn(order);
+    assert.equal((await admin('POST', `/returns/${returnId}/refund`, { refund_amount_ghs: 100 })).status, 200);
+    assert.deepEqual(await returnedPoints(user.id), [], 'a partial refund returns no points');
+
+    const before = await pointsOf(user.id);
+    assert.equal((await admin('POST', `/orders/${order.id}/refund`)).status, 200);
+    assert.deepEqual(await returnedPoints(user.id), [{ delta: 200, fresh: true }]);
+    assert.equal(await pointsOf(user.id), before + 200);
   });
 });
 

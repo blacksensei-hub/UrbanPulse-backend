@@ -19,7 +19,7 @@ import { getSettings, invalidateSettings } from '../utils/settingsCache.js';
 import { runAbandonedCartJob } from '../jobs/abandonedCart.js';
 import { runLoyaltyExpireJob } from '../jobs/loyaltyExpire.js';
 import { awardPointsForOrder, clawbackPointsForOrder } from '../utils/loyalty.js';
-import { lockOrder, refundedSoFar, rollbackPreorderCount, returnCreditSpent, releaseUnpaidOrder } from '../utils/refunds.js';
+import { lockOrder, refundedSoFar, rollbackPreorderCount, returnCreditSpent, returnPointsRedeemed, releaseUnpaidOrder } from '../utils/refunds.js';
 import { logger } from '../utils/logger.js';
 import { normalizeCategory } from '../utils/category.js';
 import { notifyBackInStock, isMissingTable } from '../utils/stockAlerts.js';
@@ -913,6 +913,7 @@ router.post('/orders/:id/refund', asyncHandler(async (req, res) => {
     );
 
     await returnCreditSpent(c, order, 'refund');
+    await returnPointsRedeemed(c, order);
 
     // Restock: only non-preorder items actually decremented stock at order
     // creation (preorder items incremented products.preorder_count instead,
